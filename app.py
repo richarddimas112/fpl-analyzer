@@ -3,9 +3,9 @@ import requests
 import pandas as pd
 import numpy as np
 import plotly.express as px
-from scipy.stats import pearsonr, shapiro
+from scipy.stats import pearsonr, shapiro, poisson
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, mean_absolute_error
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import statsmodels.api as sm
@@ -289,7 +289,7 @@ def fetch_player_history(player_id):
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=86400)
 def calculate_team_fdrs(fixtures, teams_dict):
-    """Calculate FDR1, FDR3, FDR5 and next match home status for every team."""
+    """Calculate FDR1, FDR3, FDR5 and next match home status & opponent info for every team."""
     team_upcoming = {t_id: [] for t_id in teams_dict.keys()}
     
     for f in fixtures:
@@ -300,15 +300,16 @@ def calculate_team_fdrs(fixtures, teams_dict):
             a_diff = f.get('team_a_difficulty', 3)
             
             if h_id in team_upcoming:
-                team_upcoming[h_id].append({'fdr': h_diff, 'is_home': 1, 'gw': f.get('event')})
+                team_upcoming[h_id].append({'fdr': h_diff, 'is_home': 1, 'gw': f.get('event'), 'opp_id': a_id})
             if a_id in team_upcoming:
-                team_upcoming[a_id].append({'fdr': a_diff, 'is_home': 0, 'gw': f.get('event')})
+                team_upcoming[a_id].append({'fdr': a_diff, 'is_home': 0, 'gw': f.get('event'), 'opp_id': h_id})
                 
     fdr_summary = {}
     for t_id, fxs in team_upcoming.items():
         if fxs:
             f1 = float(fxs[0]['fdr'])
             next_is_home = fxs[0]['is_home']
+            next_opp_id = fxs[0].get('opp_id')
             f3 = float(np.mean([x['fdr'] for x in fxs[:3]])) if len(fxs) >= 3 else f1
             f5 = float(np.mean([x['fdr'] for x in fxs[:5]])) if len(fxs) >= 5 else f3
         else:
@@ -316,12 +317,19 @@ def calculate_team_fdrs(fixtures, teams_dict):
             f3 = 3.0
             f5 = 3.0
             next_is_home = 1
+            next_opp_id = None
+
+        opp_name = teams_dict.get(next_opp_id, 'TBD') if next_opp_id else 'TBD'
+        opp_fmt = f"{opp_name} ({'🏠' if next_is_home == 1 else '✈️'})" if next_opp_id else "-"
             
         fdr_summary[t_id] = {
             'FDR1': round(f1, 2),
             'FDR3': round(f3, 2),
             'FDR5': round(f5, 2),
-            'Next_Is_Home': next_is_home
+            'Next_Is_Home': next_is_home,
+            'Next_Opponent_ID': next_opp_id,
+            'Next_Opponent_Name': opp_name,
+            'Next_Opponent_Fmt': opp_fmt
         }
         
     return fdr_summary
@@ -467,6 +475,201 @@ POS_MODEL_CONFIGS = {
         ]
     }
 }
+
+def check_setpiece_taker(corner_ord, fk_ord):
+    """Return 1 if corner_order <= 2 or freekick_order <= 2, else 0."""
+    try:
+        if corner_ord is not None and str(corner_ord).strip() not in ["", "None", "-"] and int(corner_ord) <= 2:
+            return 1
+    except Exception:
+        pass
+    try:
+        if fk_ord is not None and str(fk_ord).strip() not in ["", "None", "-"] and int(fk_ord) <= 2:
+            return 1
+    except Exception:
+        pass
+    return 0
+
+@st.cache_data(ttl=86400)
+def train_option_b_models(players_list, fdr_summary):
+    """
+    Train LinearRegression models for upcoming match xG and xA prediction (Option B)
+    separately for positions 'FWD', 'MID', 'DEF'. Excludes 'GK'.
+    """
+    pos_el_map = {
+        'FWD': 4,
+        'MID': 3,
+        'DEF': 2
+    }
+
+    opt_b_models_xg = {}
+    opt_b_models_xa = {}
+    stats_xg = {}
+    stats_xa = {}
+
+    for pos_key, el_type in pos_el_map.items():
+        pos_players = [p for p in players_list if p.get('element_type') == el_type]
+        top_players = sorted(pos_players, key=lambda p: (p.get('total_points', 0), p.get('minutes', 0)), reverse=True)[:35]
+
+        history_xg_rows = []
+        history_xa_rows = []
+
+        for p in top_players:
+            p_form = float(p.get('form', 0.0))
+            c_ord = p.get('corners_and_indirect_freekicks_order')
+            fk_ord = p.get('direct_freekicks_order')
+            is_sp = check_setpiece_taker(c_ord, fk_ord)
+
+            p_hist = fetch_player_history(p['id'])
+            if p_hist:
+                sorted_hist = sorted(p_hist, key=lambda m: m.get('round', m.get('event', 0)))
+                for i, m in enumerate(sorted_hist):
+                    mins = int(m.get('minutes', 0))
+                    if mins > 0:
+                        prev_5 = sorted_hist[max(0, i-4):i+1]
+                        s_mins = sum(int(x.get('minutes', 0)) for x in prev_5)
+                        xg_l5m = (sum(float(x.get('expected_goals', 0.0)) for x in prev_5) / max(1, s_mins)) * 90.0
+                        xa_l5m = (sum(float(x.get('expected_assists', 0.0)) for x in prev_5) / max(1, s_mins)) * 90.0
+                        ict_90 = (float(m.get('ict_index', 0.0)) / mins) * 90.0
+                        
+                        was_home = 1 if m.get('was_home') else 0
+                        fdr = int(m.get('opponent_team', 3)) if isinstance(m.get('opponent_team'), (int, float)) else 3
+                        opp_xgc = float(m.get('expected_goals_conceded', 1.25))
+
+                        xg_match = float(m.get('expected_goals', 0.0))
+                        xa_match = float(m.get('expected_assists', 0.0))
+
+                        history_xg_rows.append({
+                            'xG_per_90_L5M': xg_l5m,
+                            'ict_index_per_90': ict_90,
+                            'form': p_form,
+                            'was_home': was_home,
+                            'FDR': fdr,
+                            'Opponent_xGC_per_90': opp_xgc,
+                            'xG_match': xg_match
+                        })
+
+                        history_xa_rows.append({
+                            'xA_per_90_L5M': xa_l5m,
+                            'ict_index_per_90': ict_90,
+                            'is_setpiece_taker': is_sp,
+                            'form': p_form,
+                            'was_home': was_home,
+                            'FDR': fdr,
+                            'Opponent_xGC_per_90': opp_xgc,
+                            'xA_match': xa_match
+                        })
+
+        if len(history_xg_rows) >= 15:
+            df_xg = pd.DataFrame(history_xg_rows)
+            df_xa = pd.DataFrame(history_xa_rows)
+        else:
+            # Position-adjusted realistic synthetic fallback
+            np.random.seed(42 + el_type)
+            N = 250
+            if pos_key == 'FWD':
+                xg_l5m = np.random.uniform(0.15, 0.85, N)
+                xa_l5m = np.random.uniform(0.05, 0.45, N)
+                mult_xg, mult_xa = 0.45, 0.25
+            elif pos_key == 'MID':
+                xg_l5m = np.random.uniform(0.05, 0.60, N)
+                xa_l5m = np.random.uniform(0.05, 0.55, N)
+                mult_xg, mult_xa = 0.35, 0.35
+            else:  # DEF - substantially lower offensive output
+                xg_l5m = np.random.uniform(0.00, 0.12, N)
+                xa_l5m = np.random.uniform(0.00, 0.20, N)
+                mult_xg, mult_xa = 0.10, 0.12
+
+            ict_90 = np.random.uniform(1.0, 12.0, N)
+            sp_taker = np.random.choice([0, 1], N)
+            form = np.random.uniform(0.5, 8.5, N)
+            home = np.random.choice([0, 1], N)
+            fdr = np.random.choice([1, 2, 3, 4, 5], N)
+            opp_xgc = np.random.uniform(0.5, 2.5, N)
+
+            y_xg = np.maximum(0, mult_xg*xg_l5m + 0.008*ict_90 + 0.008*form + 0.02*home - 0.01*fdr + 0.02*opp_xgc + np.random.normal(0, 0.015, N))
+            y_xa = np.maximum(0, mult_xa*xa_l5m + 0.008*ict_90 + 0.04*sp_taker + 0.008*form + 0.02*home - 0.01*fdr + 0.02*opp_xgc + np.random.normal(0, 0.015, N))
+
+            df_xg = pd.DataFrame({
+                'xG_per_90_L5M': xg_l5m, 'ict_index_per_90': ict_90, 'form': form,
+                'was_home': home, 'FDR': fdr, 'Opponent_xGC_per_90': opp_xgc, 'xG_match': y_xg
+            })
+            df_xa = pd.DataFrame({
+                'xA_per_90_L5M': xa_l5m, 'ict_index_per_90': ict_90, 'is_setpiece_taker': sp_taker,
+                'form': form, 'was_home': home, 'FDR': fdr, 'Opponent_xGC_per_90': opp_xgc, 'xA_match': y_xa
+            })
+
+        # Train Model xG
+        X_xg = df_xg[['xG_per_90_L5M', 'ict_index_per_90', 'form', 'was_home', 'FDR', 'Opponent_xGC_per_90']]
+        y_xg = df_xg['xG_match']
+        model_xg = LinearRegression()
+        model_xg.fit(X_xg, y_xg)
+        opt_b_models_xg[pos_key] = model_xg
+
+        # Train Model xA
+        X_xa = df_xa[['xA_per_90_L5M', 'ict_index_per_90', 'is_setpiece_taker', 'form', 'was_home', 'FDR', 'Opponent_xGC_per_90']]
+        y_xa = df_xa['xA_match']
+        model_xa = LinearRegression()
+        model_xa.fit(X_xa, y_xa)
+        opt_b_models_xa[pos_key] = model_xa
+
+        # Calculate model statistics & evaluation metrics
+        y_pred_xg = model_xg.predict(X_xg)
+        r2_xg = round(float(r2_score(y_xg, y_pred_xg)), 4)
+        mae_xg = round(float(mean_absolute_error(y_xg, y_pred_xg)), 4)
+        eval_df_xg = pd.DataFrame({
+            'y_actual': np.round(y_xg, 4),
+            'y_pred': np.round(y_pred_xg, 4),
+            'Error': np.round(np.abs(y_xg - y_pred_xg), 4)
+        }).sort_values(by='y_actual', ascending=False).head(10)
+
+        y_pred_xa = model_xa.predict(X_xa)
+        r2_xa = round(float(r2_score(y_xa, y_pred_xa)), 4)
+        mae_xa = round(float(mean_absolute_error(y_xa, y_pred_xa)), 4)
+        eval_df_xa = pd.DataFrame({
+            'y_actual': np.round(y_xa, 4),
+            'y_pred': np.round(y_pred_xa, 4),
+            'Error': np.round(np.abs(y_xa - y_pred_xa), 4)
+        }).sort_values(by='y_actual', ascending=False).head(10)
+
+        stats_xg[pos_key] = {
+            'r2': r2_xg,
+            'mae': mae_xg,
+            'intercept': round(float(model_xg.intercept_), 4),
+            'coef_df': pd.DataFrame({
+                'Variabel Fitur': list(X_xg.columns),
+                'Koefisien (β)': np.round(model_xg.coef_, 4)
+            }),
+            'eval_df': eval_df_xg
+        }
+
+        stats_xa[pos_key] = {
+            'r2': r2_xa,
+            'mae': mae_xa,
+            'intercept': round(float(model_xa.intercept_), 4),
+            'coef_df': pd.DataFrame({
+                'Variabel Fitur': list(X_xa.columns),
+                'Koefisien (β)': np.round(model_xa.coef_, 4)
+            }),
+            'eval_df': eval_df_xa
+        }
+
+    # Flat fallback keys for single-access compatibility
+    if 'FWD' in stats_xg:
+        stats_xg['r2'] = stats_xg['FWD']['r2']
+        stats_xg['mae'] = stats_xg['FWD']['mae']
+        stats_xg['intercept'] = stats_xg['FWD']['intercept']
+        stats_xg['coef_df'] = stats_xg['FWD']['coef_df']
+        stats_xg['eval_df'] = stats_xg['FWD']['eval_df']
+
+    if 'FWD' in stats_xa:
+        stats_xa['r2'] = stats_xa['FWD']['r2']
+        stats_xa['mae'] = stats_xa['FWD']['mae']
+        stats_xa['intercept'] = stats_xa['FWD']['intercept']
+        stats_xa['coef_df'] = stats_xa['FWD']['coef_df']
+        stats_xa['eval_df'] = stats_xa['FWD']['eval_df']
+
+    return opt_b_models_xg, opt_b_models_xa, stats_xg, stats_xa
 
 @st.cache_data(ttl=86400)
 def train_xpoints_model(players_list, fdr_summary):
@@ -634,7 +837,7 @@ def compute_all_l5m_avg_mins(elements):
     return results
 
 @st.cache_data(ttl=86400)
-def process_players(bootstrap_raw, fdr_summary, _models_dict):
+def process_players(bootstrap_raw, fdr_summary, _models_dict, _opt_b_models=None):
     """Clean & format player dataset with extensive FPL metrics and positional xPoin predictions."""
     teams_list = bootstrap_raw.get('teams', [])
     team_dict = {t['id']: t['name'] for t in teams_list}
@@ -701,13 +904,16 @@ def process_players(bootstrap_raw, fdr_summary, _models_dict):
         lambda x: str(x).strip() if pd.notnull(x) and str(x).strip() != "" else "-"
     )
 
-    # 7. FDR Attachment
+    # 7. FDR Attachment & Next Opponent
     df['FDR1'] = df['team'].apply(lambda tid: fdr_summary.get(tid, {}).get('FDR1', 3.0))
     df['FDR3'] = df['team'].apply(lambda tid: fdr_summary.get(tid, {}).get('FDR3', 3.0))
     df['FDR5'] = df['team'].apply(lambda tid: fdr_summary.get(tid, {}).get('FDR5', 3.0))
     df['Next_Is_Home'] = df['team'].apply(lambda tid: fdr_summary.get(tid, {}).get('Next_Is_Home', 1))
+    df['Next_Opponent_ID'] = df['team'].apply(lambda tid: fdr_summary.get(tid, {}).get('Next_Opponent_ID'))
+    df['Next_Opponent_Name'] = df['team'].apply(lambda tid: fdr_summary.get(tid, {}).get('Next_Opponent_Name', 'TBD'))
+    df['Lawan GW Berikutnya'] = df['team'].apply(lambda tid: fdr_summary.get(tid, {}).get('Next_Opponent_Fmt', '-'))
 
-    # 8. Predict xPoin using 4 Positional LinearRegression Models
+    # 8. Predict xPoin using 4 Positional LinearRegression Models (Option A)
     mins_played = np.maximum(df['Menit Bermain'], 1.0)
 
     # Convert all raw/total metrics to per-90 scale for inference
@@ -784,9 +990,119 @@ def process_players(bootstrap_raw, fdr_summary, _models_dict):
     # Assign xPoin strictly >= 0.0 for players with >= 300 minutes played
     df['xPoin'] = np.where(df['Menit Bermain'] >= 300, df['xPoin_raw'], 0.0).round(2)
 
+    # -------------------------------------------------------------------------
+    # 9. OPTION B: BOTTOM-UP COMPONENT MODEL CALCULATIONS
+    # -------------------------------------------------------------------------
+    team_def_xgc = df.groupby('team')['xGC per 90'].mean().to_dict()
+    team_att_xg = df.groupby('Klub').apply(lambda x: x.nlargest(11, 'Menit Bermain')['xG per 90'].sum()).to_dict()
+
+    df['Opponent_xGC_per_90'] = df['Next_Opponent_ID'].map(lambda oid: team_def_xgc.get(oid, 1.25)).fillna(1.25)
+    df['Opponent_xG_per_90_attack'] = df['Next_Opponent_Name'].map(lambda name: team_att_xg.get(name, 1.5)).fillna(1.5)
+
+    df['is_setpiece_taker'] = df.apply(
+        lambda r: check_setpiece_taker(r.get('corners_and_indirect_freekicks_order'), r.get('direct_freekicks_order')), axis=1
+    )
+
+    raw_xg_match = np.zeros(len(df))
+    raw_xa_match = np.zeros(len(df))
+
+    if _opt_b_models is not None:
+        models_xg_dict, models_xa_dict = _opt_b_models
+        for pos in ['FWD', 'MID', 'DEF']:
+            pos_mask = (df['Posisi'] == pos)
+            if pos_mask.any():
+                df_pos = df[pos_mask]
+                X_xg_pos = df_pos[['xG_per_90_calc', 'ict_index_per_90_calc', 'Form', 'Next_Is_Home', 'FDR1', 'Opponent_xGC_per_90']].rename(
+                    columns={'xG_per_90_calc': 'xG_per_90_L5M', 'ict_index_per_90_calc': 'ict_index_per_90', 'Form': 'form', 'Next_Is_Home': 'was_home', 'FDR1': 'FDR'}
+                )
+                X_xa_pos = df_pos[['xA_per_90_calc', 'ict_index_per_90_calc', 'is_setpiece_taker', 'Form', 'Next_Is_Home', 'FDR1', 'Opponent_xGC_per_90']].rename(
+                    columns={'xA_per_90_calc': 'xA_per_90_L5M', 'ict_index_per_90_calc': 'ict_index_per_90', 'Form': 'form', 'Next_Is_Home': 'was_home', 'FDR1': 'FDR'}
+                )
+
+                if isinstance(models_xg_dict, dict) and pos in models_xg_dict:
+                    raw_xg_match[pos_mask] = models_xg_dict[pos].predict(X_xg_pos)
+                elif hasattr(models_xg_dict, 'predict'):
+                    raw_xg_match[pos_mask] = models_xg_dict.predict(X_xg_pos)
+                else:
+                    raw_xg_match[pos_mask] = df_pos['xG_per_90_calc'] * 0.5
+
+                if isinstance(models_xa_dict, dict) and pos in models_xa_dict:
+                    raw_xa_match[pos_mask] = models_xa_dict[pos].predict(X_xa_pos)
+                elif hasattr(models_xa_dict, 'predict'):
+                    raw_xa_match[pos_mask] = models_xa_dict.predict(X_xa_pos)
+                else:
+                    raw_xa_match[pos_mask] = df_pos['xA_per_90_calc'] * 0.5
+    else:
+        gk_mask = (df['Posisi'] == 'GK')
+        raw_xg_match = np.where(gk_mask, 0.0, df['xG_per_90_calc'] * 0.5)
+        raw_xa_match = np.where(gk_mask, 0.0, df['xA_per_90_calc'] * 0.5)
+
+    # KHUSUS UNTUK POSISI 'GK' (Kiper): Paksa (hardcode) nilai raw_xg_match = 0.0 dan raw_xa_match = 0.0
+    gk_mask = (df['Posisi'] == 'GK')
+    raw_xg_match[gk_mask] = 0.0
+    raw_xa_match[gk_mask] = 0.0
+
+    mins_ratio = df['Avg Mins (L5M)'] / 90.0
+    df['xG Pred (Match)'] = (np.maximum(0.0, raw_xg_match) * mins_ratio).round(2)
+    df['xA Pred (Match)'] = (np.maximum(0.0, raw_xa_match) * mins_ratio).round(2)
+
+    # Component Calculations:
+    # a. xMins_Pts
+    chance_factor = df['Peluang Main GW (%)'] / 100.0
+    avg_mins_l5m = df['Avg Mins (L5M)']
+    df['xMins Pts'] = np.where(
+        avg_mins_l5m >= 60.0, 2.0 * chance_factor,
+        np.where(avg_mins_l5m > 0.0, 1.0 * chance_factor, 0.0)
+    ).round(2)
+
+    # b. xG_Pts (GK=10, DEF=6, MID=5, FWD=4)
+    poin_gol_map = {'GK': 10.0, 'DEF': 6.0, 'MID': 5.0, 'FWD': 4.0}
+    poin_gol = df['Posisi'].map(poin_gol_map).fillna(4.0)
+    df['xG Pts'] = (df['xG Pred (Match)'] * poin_gol).round(2)
+
+    # c. xA_Pts (All = 3)
+    df['xA Pts'] = (df['xA Pred (Match)'] * 3.0).round(2)
+
+    # d. xSaves_Pts (GK only: expected saves / 3.0)
+    exp_saves = df['Saves per 90'] * mins_ratio
+    df['xSaves Pts'] = np.where(df['Posisi'] == 'GK', exp_saves / 3.0, 0.0).round(2)
+
+    # e. xDC_Pts (Defensive Contribution: DEF=10, MID=12, FWD=12, GK=0)
+    dc_thresh_map = {'DEF': 10, 'MID': 12, 'FWD': 12, 'GK': 0}
+    thresholds = df['Posisi'].map(dc_thresh_map).fillna(0)
+    dc_pts = []
+    for mu, t_val in zip(df['Defensive Contribution per 90'] * mins_ratio, thresholds):
+        if t_val > 0 and mu > 0:
+            prob = 1.0 - float(poisson.cdf(t_val - 1, mu))
+            val = float(np.clip(2.0 * prob, 0.0, 2.0))
+        else:
+            val = 0.0
+        dc_pts.append(val)
+    df['xDC Pts'] = np.array(dc_pts).round(2)
+
+    # f. xCS_Pts (Clean Sheet: GK=4, DEF=4, MID=1, FWD=0)
+    # PENTING: Jika Avg Mins (L5M) < 60, set xCS_Pts = 0.0 (aturan FPL minimal 60 menit)
+    poin_cs_map = {'GK': 4.0, 'DEF': 4.0, 'MID': 1.0, 'FWD': 0.0}
+    poin_cs = df['Posisi'].map(poin_cs_map).fillna(0.0)
+    prob_cs = np.exp(-df['Opponent_xG_per_90_attack'] * mins_ratio)
+    raw_xcs = prob_cs * poin_cs
+    df['xCS Pts'] = np.where(df['Avg Mins (L5M)'] >= 60.0, raw_xcs, 0.0).round(2)
+
+    # g. xBP (Bonus Points)
+    # PENTING: Batasi xBP maksimal 3.0 poin menggunakan np.clip
+    raw_xbp = (df['bps_per_90_calc'] * 0.02) + ((df['xG Pred (Match)'] + df['xA Pred (Match)']) * 0.5)
+    df['xBP'] = np.clip(raw_xbp, 0.0, 3.0).round(2)
+
+    # h. Total Option B xPoin
+    df['xPoin (Option B)'] = (
+        df['xMins Pts'] + df['xG Pts'] + df['xA Pts'] + 
+        df['xSaves Pts'] + df['xDC Pts'] + df['xCS Pts'] + df['xBP']
+    ).round(2)
+
     cols = [
-        'Nama Pemain', 'Klub', 'Posisi', 'Harga (£m)', 'xPoin', 'Avg Mins (L5M)', 'Total Poin',
-        'FDR1', 'FDR3', 'FDR5', 'Form', '% Ownership', 'Net Transfers GW',
+        'Nama Pemain', 'Klub', 'Lawan GW Berikutnya', 'Posisi', 'Harga (£m)', 'xPoin', 'xPoin (Option B)',
+        'xG Pred (Match)', 'xA Pred (Match)', 'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
+        'Avg Mins (L5M)', 'Total Poin', 'FDR1', 'FDR3', 'FDR5', 'Form', '% Ownership', 'Net Transfers GW',
         'xG', 'xA', 'xGI', 'xG per 90', 'xA per 90', 'xGI per 90',
         'xGC per 90', 'Saves per 90', 'Defensive Contribution per 90',
         'ICT Index', 'BPS', 'Bonus Poin', 'Kartu Kuning', 'Kartu Merah', 'Saves',
@@ -835,8 +1151,15 @@ def main():
         fpl_data.get('elements', []), fdr_summary
     )
 
+    # Train Option B Match xG & xA Models
+    opt_b_model_xg, opt_b_model_xa, stats_xg, stats_xa = train_option_b_models(
+        fpl_data.get('elements', []), fdr_summary
+    )
+
     # Process Player Dataset
-    players_df, team_dict = process_players(fpl_data, fdr_summary, models_dict)
+    players_df, team_dict = process_players(
+        fpl_data, fdr_summary, models_dict, _opt_b_models=(opt_b_model_xg, opt_b_model_xa)
+    )
 
     if players_df.empty:
         st.warning("Data pemain tidak ditemukan.")
@@ -933,7 +1256,12 @@ def main():
         ]
 
     # Tabs Layout
-    tab1, tab2, tab3 = st.tabs(["📊 Player Stats & xPoin", "📈 Visualisasi Data & Korelasi", "📅 Fixtures & FDR"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 Player Stats & xPoin", 
+        "📈 Visualisasi Data & Korelasi", 
+        "📅 Fixtures & FDR", 
+        "🧮 Option B: Component Model xPoin"
+    ])
 
     # -------------------------------------------------------------------------
     # TAB 1: PLAYER STATS & XPOIN PREDICTOR
@@ -1288,6 +1616,90 @@ def main():
             }
         )
         st.caption("💡 *Catatan FDR: Skala 1 (Sangat Mudah) hingga 5 (Sangat Sulit). Nilai FDR3 dan FDR5 yang lebih rendah menandakan jadwal pertandingan mendatang yang lebih menguntungkan.*")
+
+    # -------------------------------------------------------------------------
+    # TAB 4: OPTION B: COMPONENT MODEL XPOIN
+    # -------------------------------------------------------------------------
+    with tab4:
+        st.subheader("🧮 Option B: Bottom-Up Component Model xPoin")
+        st.write("Model perhitungan xPoin berdasarkan breakdown komponen individual: estimasi menit, xG/xA match regresi, kontribusi defensif, clean sheet, saves, dan bonus points.")
+
+        # Summary Metrics Row for Option B
+        b_col1, b_col2, b_col3, b_col4 = st.columns(4)
+        with b_col1:
+            st.metric("Pemain Terfilter", len(filtered_players))
+        with b_col2:
+            top_optb = filtered_players.sort_values(by="xPoin (Option B)", ascending=False).iloc[0] if not filtered_players.empty else None
+            st.metric("Top xPoin (Option B)", f"{top_optb['Nama Pemain']} ({top_optb['xPoin (Option B)']:.2f} pts)" if top_optb is not None else "-")
+        with b_col3:
+            top_xg_match = filtered_players.sort_values(by="xG Pred (Match)", ascending=False).iloc[0] if not filtered_players.empty else None
+            st.metric("Top xG Pred (Match)", f"{top_xg_match['Nama Pemain']} ({top_xg_match['xG Pred (Match)']:.2f})" if top_xg_match is not None else "-")
+        with b_col4:
+            top_xa_match = filtered_players.sort_values(by="xA Pred (Match)", ascending=False).iloc[0] if not filtered_players.empty else None
+            st.metric("Top xA Pred (Match)", f"{top_xa_match['Nama Pemain']} ({top_xa_match['xA Pred (Match)']:.2f})" if top_xa_match is not None else "-")
+
+        with st.expander("🤖 Detail Model Regresi xG & xA (Match-Level Prediction)", expanded=False):
+            m_tab1, m_tab2 = st.tabs(["⚽ Model Prediksi xG", "🎯 Model Prediksi xA"])
+            with m_tab1:
+                st.markdown("#### 📐 Regresi Linier Ekspektasi Gol (xG)")
+                pos_sel_xg = st.selectbox("Pilih Posisi (xG):", ["FWD", "MID", "DEF"], key="optb_pos_xg_sel")
+                p_stats_xg = stats_xg.get(pos_sel_xg, stats_xg)
+                mc1, mc2, mc3 = st.columns(3)
+                with mc1:
+                    st.metric("R² Score (Akurasi Fitting)", f"{p_stats_xg.get('r2', 0.0):.4f}")
+                with mc2:
+                    st.metric("Mean Absolute Error (MAE)", f"{p_stats_xg.get('mae', 0.0):.4f}")
+                with mc3:
+                    st.metric("Intercept (Konstanta β₀)", f"{p_stats_xg.get('intercept', 0.0):.4f}")
+                st.dataframe(p_stats_xg.get('coef_df', pd.DataFrame()), use_container_width=True)
+                st.markdown("##### 🔍 Top 10 Komparasi Data Training (Aktual vs Prediksi)")
+                st.dataframe(p_stats_xg.get('eval_df', pd.DataFrame()), use_container_width=True)
+            with m_tab2:
+                st.markdown("#### 📐 Regresi Linier Ekspektasi Asis (xA)")
+                pos_sel_xa = st.selectbox("Pilih Posisi (xA):", ["FWD", "MID", "DEF"], key="optb_pos_xa_sel")
+                p_stats_xa = stats_xa.get(pos_sel_xa, stats_xa)
+                mc1, mc2, mc3 = st.columns(3)
+                with mc1:
+                    st.metric("R² Score (Akurasi Fitting)", f"{p_stats_xa.get('r2', 0.0):.4f}")
+                with mc2:
+                    st.metric("Mean Absolute Error (MAE)", f"{p_stats_xa.get('mae', 0.0):.4f}")
+                with mc3:
+                    st.metric("Intercept (Konstanta β₀)", f"{p_stats_xa.get('intercept', 0.0):.4f}")
+                st.dataframe(p_stats_xa.get('coef_df', pd.DataFrame()), use_container_width=True)
+                st.markdown("##### 🔍 Top 10 Komparasi Data Training (Aktual vs Prediksi)")
+                st.dataframe(p_stats_xa.get('eval_df', pd.DataFrame()), use_container_width=True)
+
+        opt_b_cols = [
+            'Nama Pemain', 'Klub', 'Lawan GW Berikutnya', 'Posisi', 'Harga (£m)',
+            'xPoin (Option B)', 'xG Pred (Match)', 'xA Pred (Match)',
+            'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
+            'FDR1', 'FDR3', 'FDR5'
+        ]
+
+        sorted_optb = filtered_players.sort_values(by="xPoin (Option B)", ascending=False)
+
+        st.dataframe(
+            sorted_optb[opt_b_cols],
+            use_container_width=True,
+            height=560,
+            column_config={
+                "Harga (£m)": st.column_config.NumberColumn(format="£%.1fm"),
+                "xPoin (Option B)": st.column_config.NumberColumn(format="%.2f pts"),
+                "xG Pred (Match)": st.column_config.NumberColumn(format="%.2f"),
+                "xA Pred (Match)": st.column_config.NumberColumn(format="%.2f"),
+                "xMins Pts": st.column_config.NumberColumn(format="%.2f pts"),
+                "xG Pts": st.column_config.NumberColumn(format="%.2f pts"),
+                "xA Pts": st.column_config.NumberColumn(format="%.2f pts"),
+                "xSaves Pts": st.column_config.NumberColumn(format="%.2f pts"),
+                "xDC Pts": st.column_config.NumberColumn(format="%.2f pts"),
+                "xCS Pts": st.column_config.NumberColumn(format="%.2f pts"),
+                "xBP": st.column_config.NumberColumn(format="%.2f pts"),
+                "FDR1": st.column_config.NumberColumn(format="%.1f"),
+                "FDR3": st.column_config.NumberColumn(format="%.2f"),
+                "FDR5": st.column_config.NumberColumn(format="%.2f")
+            }
+        )
+        st.caption("💡 *Bottom-Up Component Model (Option B) menghitung xPoin dari akumulasi individual komponen: xMins, xG, xA, xSaves, xDC (Poisson CDF), xCS, dan xBP.*")
 
 if __name__ == "__main__":
     main()
