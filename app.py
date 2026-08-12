@@ -1089,8 +1089,12 @@ def process_players(bootstrap_raw, fdr_summary, _models_dict, _opt_b_models=None
     df['xCS Pts'] = np.where(df['Avg Mins (L5M)'] >= 60.0, raw_xcs, 0.0).round(2)
 
     # g. xBP (Bonus Points)
-    # PENTING: Batasi xBP maksimal 3.0 poin menggunakan np.clip
-    raw_xbp = (df['bps_per_90_calc'] * 0.02) + ((df['xG Pred (Match)'] + df['xA Pred (Match)']) * 0.5)
+    # FIX: Konversi bps_per_90_calc menjadi ekspektasi match riil dengan mins_ratio.
+    # Ini menetralisir inflasi statistik pemain yang hanya bermain menit kecil.
+    exp_bps_match = df['bps_per_90_calc'] * mins_ratio
+    raw_xbp = (exp_bps_match * 0.02) + ((df['xG Pred (Match)'] + df['xA Pred (Match)']) * 0.5)
+    
+    # Batasi xBP maksimal 3.0 poin (tanpa pembatasan minimal menit bermain)
     df['xBP'] = np.clip(raw_xbp, 0.0, 3.0).round(2)
 
     # h. Total Option B xPoin
