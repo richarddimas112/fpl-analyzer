@@ -213,6 +213,32 @@ st.markdown("""
 # -----------------------------------------------------------------------------
 # CONSTANTS & MAPS
 # -----------------------------------------------------------------------------
+import os
+
+# Fungsi untuk mendeteksi GW yang sedang berjalan/akan datang
+def get_current_gw(bootstrap_raw):
+    events = bootstrap_raw.get('events', [])
+    for ev in events:
+        if ev.get('is_current'):
+            return ev.get('id')
+    # Jika pre-season (belum ada yang current), cari GW berikutnya
+    for ev in events:
+        if ev.get('is_next'):
+            return ev.get('id')
+    return 1
+
+# Fungsi untuk memuat data historis
+@st.cache_data(ttl=86400)
+def load_historical_training_data():
+    """Load data histori musim lalu untuk stabilisasi model di GW1-GW10."""
+    hist_file = "data/historical_train_data.csv"
+    if os.path.exists(hist_file):
+        try:
+            return pd.read_csv(hist_file)
+        except Exception as e:
+            st.warning(f"Gagal membaca data historis: {e}")
+    return pd.DataFrame()
+
 BOOTSTRAP_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 FIXTURES_URL = "https://fantasy.premierleague.com/api/fixtures/"
 ELEMENT_SUMMARY_URL = "https://fantasy.premierleague.com/api/element-summary/{}/"
@@ -491,7 +517,7 @@ def check_setpiece_taker(corner_ord, fk_ord):
     return 0
 
 @st.cache_data(ttl=86400)
-def train_option_b_models(players_list, fdr_summary):
+def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
     """
     Train LinearRegression models for upcoming match xG and xA prediction (Option B)
     separately for positions 'FWD', 'MID', 'DEF'. Excludes 'GK'.
@@ -599,6 +625,20 @@ def train_option_b_models(players_list, fdr_summary):
                 'form': form, 'was_home': home, 'FDR': fdr, 'Opponent_xGC_per_90': opp_xgc, 'xA_match': y_xa
             })
 
+        # --- INCREMENTAL TRAINING LOGIC (OPTION B) ---
+        if current_gw <= 10 and not df_historical.empty:
+            hist_pos = df_historical[df_historical['element_type'] == el_type]
+            if not hist_pos.empty:
+                # Inject histori ke model xG
+                cols_xg = ['xG_per_90_L5M', 'ict_index_per_90', 'form', 'was_home', 'FDR', 'Opponent_xGC_per_90', 'xG_match']
+                if all(c in hist_pos.columns for c in cols_xg):
+                    df_xg = pd.concat([df_xg, hist_pos[cols_xg]], ignore_index=True)
+                
+                # Inject histori ke model xA
+                cols_xa = ['xA_per_90_L5M', 'ict_index_per_90', 'is_setpiece_taker', 'form', 'was_home', 'FDR', 'Opponent_xGC_per_90', 'xA_match']
+                if all(c in hist_pos.columns for c in cols_xa):
+                    df_xa = pd.concat([df_xa, hist_pos[cols_xa]], ignore_index=True)
+        
         # Train Model xG
         X_xg = df_xg[['xG_per_90_L5M', 'ict_index_per_90', 'form', 'was_home', 'FDR', 'Opponent_xGC_per_90']]
         y_xg = df_xg['xG_match']
@@ -672,12 +712,7 @@ def train_option_b_models(players_list, fdr_summary):
     return opt_b_models_xg, opt_b_models_xa, stats_xg, stats_xa
 
 @st.cache_data(ttl=86400)
-def train_xpoints_model(players_list, fdr_summary):
-    """
-    Train 4 separate LinearRegression models based on player position (FWD, MID, DEF, GK)
-    using specific underlying metrics for each position.
-    Fallback to realistic synthetic match dynamics if match history is empty (e.g. pre-season).
-    """
+def train_xpoints_model(players_list, fdr_summary, current_gw, df_historical):
     models_dict = {}
 
     for pos_key, cfg in POS_MODEL_CONFIGS.items():
@@ -768,6 +803,15 @@ def train_xpoints_model(players_list, fdr_summary):
             })
             is_real_history = False
 
+        # --- INCREMENTAL TRAINING LOGIC (OPTION A) ---
+        if current_gw <= 10 and not df_historical.empty:
+            hist_pos = df_historical[df_historical['element_type'] == pos_el_type]
+            if not hist_pos.empty:
+                # Ambil hanya kolom yang dibutuhkan untuk mencegah error concat
+                valid_cols = [c for c in feature_cols + ['total_points'] if c in hist_pos.columns]
+                df_train = pd.concat([df_train, hist_pos[valid_cols]], ignore_index=True)
+                is_real_history = True # Timpa status menjadi riil karena menggunakan data musim lalu
+        
         X = df_train[feature_cols]
         y = df_train['total_points']
 
@@ -1150,9 +1194,18 @@ def main():
     # Calculate FDRs
     fdr_summary = calculate_team_fdrs(fixtures_data, teams_dict)
     
-    # Train 4 Positional Regression Models for xPoin
+    # Deteksi GW saat ini dan Load Histori Musim Lalu
+    current_gw = get_current_gw(fpl_data)
+    df_historical = load_historical_training_data()
+
+    # Train 4 Positional Regression Models for xPoin (Option A)
     models_dict = train_xpoints_model(
-        fpl_data.get('elements', []), fdr_summary
+        fpl_data.get('elements', []), fdr_summary, current_gw, df_historical
+    )
+
+    # Train Option B Match xG & xA Models (Option B)
+    opt_b_model_xg, opt_b_model_xa, stats_xg, stats_xa = train_option_b_models(
+        fpl_data.get('elements', []), fdr_summary, current_gw, df_historical
     )
 
     # Train Option B Match xG & xA Models
