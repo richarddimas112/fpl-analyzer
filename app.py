@@ -1208,11 +1208,6 @@ def main():
         fpl_data.get('elements', []), fdr_summary, current_gw, df_historical
     )
 
-    # Train Option B Match xG & xA Models
-    opt_b_model_xg, opt_b_model_xa, stats_xg, stats_xa = train_option_b_models(
-        fpl_data.get('elements', []), fdr_summary
-    )
-
     # Process Player Dataset
     players_df, team_dict = process_players(
         fpl_data, fdr_summary, models_dict, _opt_b_models=(opt_b_model_xg, opt_b_model_xa)
