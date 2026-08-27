@@ -1031,8 +1031,8 @@ def process_players(bootstrap_raw, fdr_summary, _models_dict, _opt_b_models=None
             preds = model_info['model'].predict(X_pos)
             df.loc[pos_mask, 'xPoin_raw'] = np.clip(preds, 0.0, None)
 
-    # Assign xPoin strictly >= 0.0 for players with >= 300 minutes played
-    df['xPoin'] = np.where(df['Menit Bermain'] >= 300, df['xPoin_raw'], 0.0).round(2)
+    # Assign xPoin strictly >= 0.0
+    df['xPoin'] = df['xPoin_raw'].round(2)
 
     # -------------------------------------------------------------------------
     # 9. OPTION B: BOTTOM-UP COMPONENT MODEL CALCULATIONS
