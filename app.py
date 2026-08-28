@@ -3,7 +3,8 @@ import requests
 import pandas as pd
 import numpy as np
 import plotly.express as px
-from scipy.stats import pearsonr, shapiro, poisson
+import plotly.graph_objects as go
+from scipy.stats import pearsonr, shapiro, poisson, percentileofscore
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_absolute_error
 from datetime import datetime
@@ -207,6 +208,68 @@ st.markdown("""
         padding: 4px !important;
         box-shadow: 0 1px 3px rgba(0,0,0,0.02) !important;
     }
+
+    /* Radar & Comparison Custom Styles */
+    .compare-card-p1 {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-top: 4px solid #0284c7;
+        border-radius: 12px;
+        padding: 16px 20px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    }
+    .compare-card-p2 {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-top: 4px solid #e11d48;
+        border-radius: 12px;
+        padding: 16px 20px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    }
+    .compare-tag-p1 {
+        display: inline-block;
+        background: #e0f2fe;
+        color: #0284c7;
+        font-weight: 700;
+        font-size: 0.75rem;
+        padding: 2px 8px;
+        border-radius: 6px;
+        margin-bottom: 6px;
+    }
+    .compare-tag-p2 {
+        display: inline-block;
+        background: #ffe4e6;
+        color: #e11d48;
+        font-weight: 700;
+        font-size: 0.75rem;
+        padding: 2px 8px;
+        border-radius: 6px;
+        margin-bottom: 6px;
+    }
+    .vs-circle {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background-color: #37003c;
+        color: #00ff85;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 900;
+        font-size: 1rem;
+        letter-spacing: -0.02em;
+        margin: 0 auto;
+        box-shadow: 0 2px 6px rgba(55, 0, 60, 0.25);
+    }
+    .radar-summary-box {
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-left: 5px solid #00ff85;
+        border-radius: 10px;
+        padding: 16px 20px;
+        margin-top: 14px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -216,8 +279,8 @@ st.markdown("""
 import os
 
 # Fungsi untuk mendeteksi GW yang sedang berjalan/akan datang
-def get_current_gw(bootstrap_raw):
-    events = bootstrap_raw.get('events', [])
+def get_current_gw(fpl_data):
+    events = fpl_data.get('events', [])
     for ev in events:
         if ev.get('is_current'):
             return ev.get('id')
@@ -279,8 +342,7 @@ def fetch_fpl_data():
         response = requests.get(BOOTSTRAP_URL, headers=HEADERS, timeout=10)
         response.raise_for_status()
         return response.json()
-    except Exception as e:
-        st.error(f"Gagal mengambil data FPL: {e}")
+    except Exception:
         return None
 
 @st.cache_data(ttl=86400)
@@ -290,8 +352,7 @@ def fetch_fixtures_data():
         response = requests.get(FIXTURES_URL, headers=HEADERS, timeout=10)
         response.raise_for_status()
         return response.json()
-    except Exception as e:
-        st.error(f"Gagal mengambil data jadwal: {e}")
+    except Exception:
         return []
 
 def fetch_player_history_raw(player_id):
@@ -309,6 +370,182 @@ def fetch_player_history_raw(player_id):
 def fetch_player_history(player_id):
     """Fetch cached per-match summary history for a given player."""
     return fetch_player_history_raw(player_id)
+
+@st.cache_data(ttl=86400)
+def fetch_player_element_summary(player_id):
+    """Fetch complete element-summary (history, history_past, fixtures) for a given player."""
+    try:
+        url = ELEMENT_SUMMARY_URL.format(player_id)
+        res = requests.get(url, headers=HEADERS, timeout=8)
+        if res.status_code == 200:
+            return res.json()
+    except Exception:
+        pass
+    return {'history': [], 'history_past': [], 'fixtures': []}
+
+@st.cache_data(ttl=86400)
+def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
+    """
+    Aggregate comprehensive Premier League team data from player statistics and FPL APIs:
+    - Average FPL points of players (and active players)
+    - Total squad points and squad market value
+    - Offensive metrics: Total Goals, Total Assists, Total xG, Total xA, Total xGI, Top Scorer
+    - Defensive metrics: Clean Sheets, Total xGC, Total Saves, Defensive Contribution
+    - Fixture Difficulty Ratings: FDR1, FDR3, FDR5, Next Opponent (Home/Away), Schedule Ease
+    - Normalized Composite Team Strength Index (0 - 100) and Strength Tiers
+    """
+    teams = _fpl_data.get('teams', []) if _fpl_data else []
+    records = []
+    
+    for t in teams:
+        t_id = t['id']
+        t_name = t['name']
+        t_short = t.get('short_name', '')
+        
+        # Filter players for this team
+        if 'team' in players_df.columns:
+            tp = players_df[players_df['team'] == t_id]
+        else:
+            tp = players_df[players_df['Klub'] == t_name]
+            
+        total_players = len(tp)
+        if total_players > 0:
+            # Pastikan hanya menghitung pemain yang sudah bermain (Menit Bermain > 0)
+            active = tp[tp['Menit Bermain'] > 0]
+            total_points = int(tp['Total Poin'].sum())
+            # Rata-rata poin pemain dihitung HANYA untuk pemain yang sudah bermain (Menit Bermain > 0)
+            avg_points_played = float(active['Total Poin'].mean()) if not active.empty else 0.0
+            avg_points_all = float(tp['Total Poin'].mean())
+            
+            total_goals = int(tp['Gol'].sum())
+            total_assists = int(tp['Asis'].sum())
+            total_xg = float(tp['xG'].sum())
+            total_xa = float(tp['xA'].sum())
+            total_xgi = float(tp['xGI'].sum())
+            
+            def_gk = tp[tp['Posisi'].isin(['DEF', 'GK'])]
+            clean_sheets = int(def_gk['Clean Sheet'].max()) if not def_gk.empty else 0
+            
+            if 'expected_goals_conceded' in def_gk.columns:
+                total_xgc = float(pd.to_numeric(def_gk['expected_goals_conceded'], errors='coerce').fillna(0.0).sum())
+            elif 'xGC' in def_gk.columns:
+                total_xgc = float(pd.to_numeric(def_gk['xGC'], errors='coerce').fillna(0.0).sum())
+            else:
+                total_xgc = 0.0
+                
+            total_saves = int(tp['Saves'].sum()) if 'Saves' in tp.columns else 0
+            avg_form = float(active['Form'].mean()) if not active.empty else 0.0
+            total_squad_value = float(tp['Harga (£m)'].sum()) if 'Harga (£m)' in tp.columns else 0.0
+            total_bps = int(tp['BPS'].sum()) if 'BPS' in tp.columns else 0
+            
+            # Top Scorer & Top Creator
+            sorted_by_goals = tp.sort_values(by=['Gol', 'xG'], ascending=False)
+            top_scorer_row = sorted_by_goals.iloc[0] if not sorted_by_goals.empty else None
+            top_scorer_name = f"{top_scorer_row['Nama Pemain']} ({int(top_scorer_row['Gol'])}G)" if top_scorer_row is not None and top_scorer_row['Gol'] > 0 else (top_scorer_row['Nama Pemain'] if top_scorer_row is not None else "-")
+            
+            sorted_by_assists = tp.sort_values(by=['Asis', 'xA'], ascending=False)
+            top_creator_row = sorted_by_assists.iloc[0] if not sorted_by_assists.empty else None
+            top_creator_name = f"{top_creator_row['Nama Pemain']} ({int(top_creator_row['Asis'])}A)" if top_creator_row is not None and top_creator_row['Asis'] > 0 else (top_creator_row['Nama Pemain'] if top_creator_row is not None else "-")
+            
+            sorted_by_pts = tp.sort_values(by=['Total Poin', 'xPoin'], ascending=False)
+            top_asset_row = sorted_by_pts.iloc[0] if not sorted_by_pts.empty else None
+            top_asset_name = f"{top_asset_row['Nama Pemain']} ({int(top_asset_row['Total Poin'])} pts)" if top_asset_row is not None else "-"
+        else:
+            total_points = 0
+            avg_points_played = 0.0
+            avg_points_all = 0.0
+            total_goals = 0
+            total_assists = 0
+            total_xg = 0.0
+            total_xa = 0.0
+            total_xgi = 0.0
+            clean_sheets = 0
+            total_xgc = 0.0
+            total_saves = 0
+            avg_form = 0.0
+            total_squad_value = 0.0
+            total_bps = 0
+            top_scorer_name = "-"
+            top_creator_name = "-"
+            top_asset_name = "-"
+            
+        f_info = fdr_summary.get(t_id, {})
+        fdr1 = float(f_info.get('FDR1', 3.0))
+        fdr3 = float(f_info.get('FDR3', 3.0))
+        fdr5 = float(f_info.get('FDR5', 3.0))
+        next_opp = f_info.get('Next_Opponent_Fmt', '-')
+        
+        str_ovr_h = t.get('strength_overall_home', 3) or 3
+        str_ovr_a = t.get('strength_overall_away', 3) or 3
+        str_ovr = round((str_ovr_h + str_ovr_a) / 2.0, 1)
+        
+        records.append({
+            'team_id': t_id,
+            'Klub': t_name,
+            'Kode': t_short,
+            'Total Pemain': total_players,
+            'Pemain Aktif': len(active) if total_players > 0 else 0,
+            'Total Poin Skuad': total_points,
+            'Rata-rata Poin Pemain': round(avg_points_played, 2),
+            'Rata-rata Poin Skuad': round(avg_points_all, 2),
+            'Total Gol': total_goals,
+            'Total Asis': total_assists,
+            'Total xG': round(total_xg, 2),
+            'Total xA': round(total_xa, 2),
+            'Total xGI': round(total_xgi, 2),
+            'Clean Sheet': clean_sheets,
+            'Total xGC': round(total_xgc, 2),
+            'Total Saves': total_saves,
+            'Form Rata-rata': round(avg_form, 2),
+            'Nilai Skuad (£m)': round(total_squad_value, 1),
+            'Total BPS': total_bps,
+            'Top Scorer': top_scorer_name,
+            'Top Creator': top_creator_name,
+            'Top Aset FPL': top_asset_name,
+            'FDR1': round(fdr1, 1),
+            'FDR3': round(fdr3, 2),
+            'FDR5': round(fdr5, 2),
+            'Lawan Berikutnya': next_opp,
+            'Official_Strength': str_ovr
+        })
+        
+    df_teams = pd.DataFrame(records)
+    if df_teams.empty:
+        return df_teams
+        
+    def min_max_scale(series, invert=False):
+        mn, mx = series.min(), series.max()
+        if mx == mn:
+            return pd.Series(50.0, index=series.index)
+        scaled = (series - mn) / (mx - mn) * 100.0
+        return (100.0 - scaled) if invert else scaled
+
+    att_score = 0.6 * min_max_scale(df_teams['Total xG']) + 0.4 * min_max_scale(df_teams['Total Gol'])
+    def_score = 0.5 * min_max_scale(df_teams['Clean Sheet']) + 0.5 * min_max_scale(df_teams['Total xGC'], invert=True)
+    pts_score = 0.6 * min_max_scale(df_teams['Rata-rata Poin Pemain']) + 0.4 * min_max_scale(df_teams['Total Poin Skuad'])
+    fdr_score = min_max_scale(df_teams['FDR3'], invert=True)
+    base_score = min_max_scale(df_teams['Official_Strength'])
+    
+    # 20% Metrik Serangan, 20% Soliditas Pertahanan, 15% Efisiensi Poin Pemain Aktif, 30% Kekuatan Resmi Premier League, 15% Kemudahan Jadwal FDR
+    composite = (0.20 * att_score + 0.20 * def_score + 0.15 * pts_score + 0.30 * base_score + 0.15 * fdr_score).round(1)
+    
+    df_teams['Indeks Kekuatan'] = composite
+    df_teams['Skor Serangan'] = att_score.round(1)
+    df_teams['Skor Pertahanan'] = def_score.round(1)
+    df_teams['Kemudahan Jadwal (%)'] = fdr_score.round(1)
+    
+    def assign_tier(score):
+        if score >= 75:
+            return "🏆 Elite Contender"
+        elif score >= 60:
+            return "🌟 Top Tier Challenger"
+        elif score >= 48:
+            return "⚖️ Mid-Table Stable"
+        else:
+            return "⚠️ Underdogs / Rebuilding"
+            
+    df_teams['Kategori Tim'] = df_teams['Indeks Kekuatan'].apply(assign_tier)
+    return df_teams
 
 # -----------------------------------------------------------------------------
 # FIXTURE DIFFICULTY RATING (FDR1, FDR3, FDR5) CALCULATIONS
@@ -881,12 +1118,12 @@ def compute_all_l5m_avg_mins(elements):
     return results
 
 @st.cache_data(ttl=86400)
-def process_players(bootstrap_raw, fdr_summary, _models_dict, _opt_b_models=None):
+def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
     """Clean & format player dataset with extensive FPL metrics and positional xPoin predictions."""
-    teams_list = bootstrap_raw.get('teams', [])
+    teams_list = fpl_data.get('teams', [])
     team_dict = {t['id']: t['name'] for t in teams_list}
     
-    elements = bootstrap_raw.get('elements', [])
+    elements = fpl_data.get('elements', [])
     df = pd.DataFrame(elements)
     
     if df.empty:
@@ -1051,7 +1288,8 @@ def process_players(bootstrap_raw, fdr_summary, _models_dict, _opt_b_models=None
     raw_xa_match = np.zeros(len(df))
 
     if _opt_b_models is not None:
-        models_xg_dict, models_xa_dict = _opt_b_models
+        models_xg_dict = _opt_b_models[0]
+        models_xa_dict = _opt_b_models[1]
         for pos in ['FWD', 'MID', 'DEF']:
             pos_mask = (df['Posisi'] == pos)
             if pos_mask.any():
@@ -1148,6 +1386,7 @@ def process_players(bootstrap_raw, fdr_summary, _models_dict, _opt_b_models=None
     ).round(2)
 
     cols = [
+        'id', 'team',
         'Nama Pemain', 'Klub', 'Lawan GW Berikutnya', 'Posisi', 'Harga (£m)', 'xPoin', 'xPoin (Option B)',
         'xG Pred (Match)', 'xA Pred (Match)', 'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
         'Avg Mins (L5M)', 'Total Poin', 'FDR1', 'FDR3', 'FDR5', 'Form', '% Ownership', 'Net Transfers GW',
@@ -1164,6 +1403,839 @@ def process_players(bootstrap_raw, fdr_summary, _models_dict, _opt_b_models=None
 # -----------------------------------------------------------------------------
 # MAIN APP ENTRY POINT
 # -----------------------------------------------------------------------------
+
+
+# -----------------------------------------------------------------------------
+# OPTION C: CURRENT SEASON MODEL (TAB 5)
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=86400)
+def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw):
+    # Model diperbarui setiap 5 gameweek: GW5, GW10, GW15, dst.
+    # Cache key includes (current_gw // 5) to force remodeling.
+    remodel_cycle = current_gw // 5 
+    
+    elements = fpl_data.get('elements', [])
+    teams = fpl_data.get('teams', [])
+    team_strength = {t['id']: t['strength'] for t in teams}
+    team_dict = {t['id']: t['name'] for t in teams}
+    pos_map = {1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}
+    
+    # Calculate Team Current Aggregates for opp_xGC_per90 etc.
+    team_xG_total = {}
+    team_xGC_total = {}
+    
+    # Simple proxy: Sum of player xG = team xG. 
+    for el in elements:
+        t_id = el['team']
+        xg = float(el.get('expected_goals', 0))
+        xgc = float(el.get('expected_goals_conceded', 0))
+        # For xGC, only count GK to avoid duplicating 11x
+        if el['element_type'] == 1:
+            team_xGC_total[t_id] = team_xGC_total.get(t_id, 0) + xgc
+        team_xG_total[t_id] = team_xG_total.get(t_id, 0) + xg
+        
+    team_matches = current_gw if current_gw > 0 else 1
+    
+    from concurrent.futures import ThreadPoolExecutor
+    all_histories = []
+    
+    def fetch_hist_c(el):
+        hist = fetch_player_history_raw(el['id'])
+        return el['id'], el['element_type'], el['team'], hist
+        
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = executor.map(fetch_hist_c, elements)
+        for p_id, pos, team_id, hist in futures:
+            if hist:
+                sorted_hist = sorted(hist, key=lambda m: m.get('round', m.get('event', 0)))
+                pts_history = []
+                mins_history = []
+                
+                for m in sorted_hist:
+                    m_dict = dict(m)
+                    m_dict['player_id'] = p_id
+                    m_dict['posisi'] = pos_map.get(pos, 'Unknown')
+                    m_dict['team_id'] = team_id
+                    
+                    mins = int(m_dict.get('minutes', 0))
+                    pts = int(m_dict.get('total_points', 0))
+                    pts_history.append(pts)
+                    mins_history.append(mins)
+                    
+                    m_dict['form_calc'] = np.mean(pts_history[-4:]) if pts_history else 0.0
+                    m_dict['avg_mins_L5M'] = np.mean(mins_history[-5:]) if mins_history else 0.0
+                    
+                    for stat in ['expected_goals', 'expected_assists', 'expected_goals_conceded']:
+                        val = float(m_dict.get(stat, 0.0))
+                        m_dict[f"{stat}_per_90"] = (val / mins * 90) if mins > 0 else 0.0
+                    
+                    opp_team = m_dict.get('opponent_team')
+                    m_dict['FDR_now'] = team_strength.get(opp_team, 3)
+                    
+                    # Proxy opp stats
+                    m_dict['opp_xGC_per90'] = team_xGC_total.get(opp_team, 0) / team_matches
+                    m_dict['opp_xG_per90'] = team_xG_total.get(opp_team, 0) / team_matches
+                    m_dict['opp_l5m_xGC_per90'] = m_dict['opp_xGC_per90'] # proxy
+                    m_dict['opp_l5m_xG_per90'] = m_dict['opp_xG_per90'] # proxy
+                    
+                    m_dict['laga kandang/tandang'] = 1 if m_dict.get('was_home') else 0
+                    
+                    all_histories.append(m_dict)
+                    
+    df_train = pd.DataFrame(all_histories)
+    if df_train.empty:
+        return None, None, None
+        
+    numeric_cols = ['minutes', 'influence', 'creativity', 'threat', 'expected_goals', 'expected_assists', 
+                    'clearances_blocks_interceptions', 'expected_goals_conceded', 'saves', 'clean_sheets',
+                    'FDR_now']
+    for c in numeric_cols:
+        if c in df_train.columns:
+            df_train[c] = pd.to_numeric(df_train[c], errors='coerce').fillna(0.0)
+
+    df_train.rename(columns={
+        'expected_goals': 'xG',
+        'expected_assists': 'xA',
+        'form_calc': 'form',
+        'FDR_now': 'FDR',
+        'clearances_blocks_interceptions': 'CBIT',
+        'expected_goals_conceded': 'xGC'
+    }, inplace=True)
+    
+    features_map = {
+        'FWD': ['minutes', 'influence', 'creativity', 'threat', 'xG', 'xA', 'form', 'laga kandang/tandang', 'FDR', 'avg_mins_L5M'],
+        'MID': ['minutes', 'influence', 'creativity', 'threat', 'xG', 'xA', 'form', 'laga kandang/tandang', 'FDR', 'avg_mins_L5M', 'CBIT', 'xGC'],
+        'DEF': ['minutes', 'influence', 'creativity', 'threat', 'xG', 'xA', 'form', 'laga kandang/tandang', 'FDR', 'avg_mins_L5M', 'CBIT', 'xGC'],
+        'GK':  ['minutes', 'form', 'laga kandang/tandang', 'FDR', 'avg_mins_L5M', 'CBIT', 'xGC', 'saves', 'clean_sheets']
+    }
+    
+    models_c = {}
+    
+    for pos, feats in features_map.items():
+        # Using all data to train Option C
+        pos_df = df_train[df_train['posisi'] == pos].dropna(subset=feats + ['total_points'])
+        if len(pos_df) > 10:
+            X = pos_df[feats]
+            y = pos_df['total_points']
+            model = LinearRegression()
+            model.fit(X, y)
+            models_c[pos] = {'model': model, 'features': feats}
+            
+    summary_data = []
+    for el in elements:
+        p_id = el['id']
+        pos = pos_map.get(el['element_type'])
+        if pos not in models_c:
+            continue
+            
+        team_id = el['team']
+        f_info = fdr_summary.get(team_id, {})
+        fdr_next = f_info.get('FDR1', 3.0)
+        fdr3 = f_info.get('FDR3', 3.0)
+        fdr5 = f_info.get('FDR5', 3.0)
+        is_home_next = 1 if f_info.get('Next_Is_Home') == 1 else 0
+        
+        hist = fetch_player_history_raw(p_id)
+        if hist:
+            sorted_hist = sorted(hist, key=lambda m: m.get('round', m.get('event', 0)))
+            last_5 = sorted_hist[-5:]
+            avg_mins = np.mean([int(m.get('minutes', 0)) for m in last_5]) if last_5 else 0.0
+            form_val = np.mean([int(m.get('total_points', 0)) for m in last_5[-4:]]) if last_5 else 0.0
+        else:
+            avg_mins = 0.0
+            form_val = 0.0
+            
+        tot_mins = float(el.get('minutes', 0))
+        def _get_avg(col):
+            val = float(el.get(col, 0.0))
+            return val / (tot_mins/90) if tot_mins > 0 else 0.0
+            
+        curr_x = {
+            'minutes': avg_mins,
+            'influence': float(el.get('influence', 0)) / (tot_mins/90) if tot_mins>0 else 0,
+            'creativity': float(el.get('creativity', 0)) / (tot_mins/90) if tot_mins>0 else 0,
+            'threat': float(el.get('threat', 0)) / (tot_mins/90) if tot_mins>0 else 0,
+            'xG': float(el.get('expected_goals', 0)) / (tot_mins/90) if tot_mins>0 else 0,
+            'xA': float(el.get('expected_assists', 0)) / (tot_mins/90) if tot_mins>0 else 0,
+            'form': form_val,
+            'laga kandang/tandang': is_home_next,
+            'FDR': fdr_next,
+            'avg_mins_L5M': avg_mins,
+            'CBIT': float(el.get('clearances_blocks_interceptions', 0)) / (tot_mins/90) if tot_mins>0 else 0,
+            'xGC': float(el.get('expected_goals_conceded', 0)) / (tot_mins/90) if tot_mins>0 else 0,
+            'saves': float(el.get('saves', 0)) / (tot_mins/90) if tot_mins>0 else 0,
+            'clean_sheets': float(el.get('clean_sheets', 0)) / (tot_mins/90) if tot_mins>0 else 0
+        }
+        
+        feats = models_c[pos]['features']
+        X_pred = pd.DataFrame([curr_x])[feats]
+        
+        xpoin_c = models_c[pos]['model'].predict(X_pred)[0]
+        
+        status = el.get('status', 'a')
+        status_map = {'a': 'Available', 'd': 'Doubtful', 'i': 'Injured', 's': 'Suspended', 'u': 'Unavailable'}
+        
+        summary_data.append({
+            'Nama Pemain': el['web_name'],
+            'Klub': team_dict.get(team_id, ''),
+            'Posisi': pos,
+            'Total Poin': el.get('total_points', 0),
+            'xPoin (Option C)': max(0.0, float(xpoin_c)),
+            'Total xG': float(el.get('expected_goals', 0)),
+            'Total xA': float(el.get('expected_assists', 0)),
+            'Avg Mins (L5M)': avg_mins,
+            'FDR1': fdr_next,
+            'FDR3': fdr3,
+            'FDR5': fdr5,
+            'Status': status_map.get(status, status)
+        })
+        
+    df_view = pd.DataFrame(summary_data)
+    if not df_view.empty:
+        df_view = df_view.sort_values('xPoin (Option C)', ascending=False)
+        
+    return df_train, df_view, models_c
+
+# -----------------------------------------------------------------------------
+# PLAYER COMPARISON & RADAR CHART MODULE
+# -----------------------------------------------------------------------------
+def render_player_comparison_radar_tab(players_df, fpl_data, teams_dict):
+    st.subheader("⚔️ Komparasi Head-to-Head 2 Pemain & Grafik Radar")
+    st.write("Bandingkan profil performa, potensi serangan, efisiensi poin, dan statistik 360° antara dua pemain Fantasy Premier League menggunakan visualisasi grafik radar interaktif.")
+
+    if players_df.empty:
+        st.warning("Data pemain tidak tersedia untuk komparasi.")
+        return
+
+    # Siapkan dataframe komparasi dengan metrik turunan
+    df = players_df.copy()
+    if 'Poin per £m' not in df.columns:
+        df['Poin per £m'] = np.where(df['Harga (£m)'] > 0, (df['Total Poin'] / df['Harga (£m)']).round(2), 0.0)
+    if 'xPoin per £m' not in df.columns:
+        df['xPoin per £m'] = np.where(df['Harga (£m)'] > 0, (df['xPoin'] / df['Harga (£m)']).round(2), 0.0)
+    if 'Kemudahan Jadwal' not in df.columns:
+        df['Kemudahan Jadwal'] = (6.0 - df['FDR1']).round(1)
+    if 'Kemudahan Jadwal (3 Laga)' not in df.columns:
+        df['Kemudahan Jadwal (3 Laga)'] = (6.0 - df['FDR3']).round(2)
+
+    # Filter hanya pemain yang aktif dan memiliki menit bermain di Premier League
+    active_pool = df[df['Menit Bermain'] > 0].copy()
+    if active_pool.empty:
+        active_pool = df.copy()
+        
+    active_sorted = active_pool.sort_values(by=['Total Poin', 'xPoin'], ascending=False)
+    
+    top_p1_default = active_sorted.iloc[0]['Nama Pemain'] if not active_sorted.empty else df.iloc[0]['Nama Pemain']
+    top_p2_default = active_sorted.iloc[1]['Nama Pemain'] if len(active_sorted) > 1 else (df.iloc[1]['Nama Pemain'] if len(df) > 1 else df.iloc[0]['Nama Pemain'])
+
+    # Validasi session_state agar tidak menyimpan nama basi / pemain yang sudah tidak main di EPL
+    current_p1 = st.session_state.get('comp_p1')
+    if not current_p1 or current_p1 not in df['Nama Pemain'].values or current_p1 == 'M.Salah':
+        st.session_state['comp_p1'] = top_p1_default
+
+    current_p2 = st.session_state.get('comp_p2')
+    if not current_p2 or current_p2 not in df['Nama Pemain'].values or current_p2 == 'M.Salah':
+        st.session_state['comp_p2'] = top_p2_default
+        
+    if st.session_state['comp_p1'] == st.session_state['comp_p2'] and len(active_sorted) > 1:
+        st.session_state['comp_p2'] = top_p2_default
+
+    # 1. Rekomendasi Duel Real-Time (Dihitung Dinamis dari Pemain yang Aktif Bermain di EPL)
+    realtime_matchups = []
+    
+    # a. Top 2 Total Poin Keseluruhan
+    if len(active_sorted) >= 2:
+        r1, r2 = active_sorted.iloc[0], active_sorted.iloc[1]
+        realtime_matchups.append((f"👑 {r1['Nama Pemain']} vs {r2['Nama Pemain']} (Top Poin Liga)", r1['Nama Pemain'], r2['Nama Pemain']))
+        
+    # b. Top 2 Gelandang Aktif (MID)
+    mids_act = active_pool[active_pool['Posisi'] == 'MID'].sort_values(by=['Total Poin', 'xPoin'], ascending=False)
+    if len(mids_act) >= 2:
+        m1, m2 = mids_act.iloc[0], mids_act.iloc[1]
+        realtime_matchups.append((f"⚡ {m1['Nama Pemain']} vs {m2['Nama Pemain']} (Top MID)", m1['Nama Pemain'], m2['Nama Pemain']))
+
+    # c. Top 2 Penyerang Aktif (FWD)
+    fwds_act = active_pool[active_pool['Posisi'] == 'FWD'].sort_values(by=['Total Poin', 'xPoin'], ascending=False)
+    if len(fwds_act) >= 2:
+        f1, f2 = fwds_act.iloc[0], fwds_act.iloc[1]
+        realtime_matchups.append((f"🎯 {f1['Nama Pemain']} vs {f2['Nama Pemain']} (Top FWD)", f1['Nama Pemain'], f2['Nama Pemain']))
+
+    # d. Top 2 Bek Aktif (DEF)
+    defs_act = active_pool[active_pool['Posisi'] == 'DEF'].sort_values(by=['Total Poin', 'xPoin'], ascending=False)
+    if len(defs_act) >= 2:
+        d1, d2 = defs_act.iloc[0], defs_act.iloc[1]
+        realtime_matchups.append((f"🛡️ {d1['Nama Pemain']} vs {d2['Nama Pemain']} (Top DEF)", d1['Nama Pemain'], d2['Nama Pemain']))
+
+    # e. Top 2 Kiper Aktif (GK)
+    gks_act = active_pool[active_pool['Posisi'] == 'GK'].sort_values(by=['Total Poin', 'xPoin'], ascending=False)
+    if len(gks_act) >= 2:
+        g1, g2 = gks_act.iloc[0], gks_act.iloc[1]
+        realtime_matchups.append((f"🧤 {g1['Nama Pemain']} vs {g2['Nama Pemain']} (Top GK)", g1['Nama Pemain'], g2['Nama Pemain']))
+
+    with st.expander("⚡ Rekomendasi Duel Real-Time (Top Performer Aktif EPL)", expanded=True):
+        st.caption("Pintasan duel di bawah ini dihitung otomatis secara *real-time* dari pemain Premier League yang sedang aktif bermain musim ini (Menit Bermain > 0).")
+        if realtime_matchups:
+            rt_cols = st.columns(len(realtime_matchups))
+            for col, (btn_lbl, target1, target2) in zip(rt_cols, realtime_matchups):
+                with col:
+                    if st.button(btn_lbl, use_container_width=True, key=f"rt_btn_{target1}_{target2}"):
+                        st.session_state['comp_p1'] = target1
+                        st.session_state['comp_p2'] = target2
+                        st.rerun()
+
+    def format_player_picker(p):
+        if not p or not isinstance(p, dict):
+            return ""
+        name = p.get('Nama Pemain', '')
+        klub = p.get('Klub', '')
+        pos = p.get('Posisi', '')
+        pts = p.get('Total Poin', 0)
+        mins = p.get('Menit Bermain', 0)
+        try:
+            price = f"£{float(p.get('Harga (£m)', 0.0)):.1f}m"
+        except (ValueError, TypeError):
+            price = "-"
+        try:
+            xpts = f"{float(p.get('xPoin', 0.0)):.2f}"
+        except (ValueError, TypeError):
+            xpts = "-"
+        return f"{name} ({klub} · {pos}) · {price} · Total: {pts} pts ({mins} min) · xPoin: {xpts}"
+
+    col_filter_hdr1, col_filter_hdr2 = st.columns([1, 1])
+    with col_filter_hdr1:
+        st.markdown("##### 👥 Pemilihan Pemain Head-to-Head")
+    with col_filter_hdr2:
+        filter_played_only = st.checkbox(
+            "Hanya tampilkan pemain yang sudah bermain di EPL (Menit Bermain > 0)",
+            value=True,
+            help="Saring daftar agar hanya menampilkan pemain yang telah mencatatkan menit bermain di Premier League musim ini.",
+            key="radar_filter_played_only"
+        )
+
+    col_sel1, col_swap, col_sel2 = st.columns([10, 2, 10])
+
+    pos_options = ["Semua Posisi", "FWD", "MID", "DEF", "GK"]
+    club_options = ["Semua Klub"] + sorted(list(df['Klub'].unique()))
+
+    with col_sel1:
+        st.markdown("#### 🔵 Pemain 1 (Biru)")
+        f_p1_c1, f_p1_c2 = st.columns(2)
+        with f_p1_c1:
+            p1_pos_filter = st.selectbox("Filter Posisi (P1):", pos_options, key="p1_pos_filt")
+        with f_p1_c2:
+            p1_club_filter = st.selectbox("Filter Klub (P1):", club_options, key="p1_club_filt")
+        
+        p1_pool = df.copy()
+        if filter_played_only:
+            p1_pool = p1_pool[p1_pool['Menit Bermain'] > 0]
+        if p1_pos_filter != "Semua Posisi":
+            p1_pool = p1_pool[p1_pool['Posisi'] == p1_pos_filter]
+        if p1_club_filter != "Semua Klub":
+            p1_pool = p1_pool[p1_pool['Klub'] == p1_club_filter]
+        
+        # Jika pool kosong karena filter, fallback ke active_pool
+        if p1_pool.empty:
+            p1_pool = active_pool.copy()
+            
+        p1_pool = p1_pool.sort_values(by="Total Poin", ascending=False)
+        p1_records = p1_pool.to_dict('records')
+        
+        cur_p1_name = st.session_state.get('comp_p1')
+        p1_names = [r.get('Nama Pemain') for r in p1_records]
+        if cur_p1_name not in p1_names and p1_records:
+            cur_p1_name = p1_records[0].get('Nama Pemain')
+            st.session_state['comp_p1'] = cur_p1_name
+
+        p1_idx = 0
+        for i, rec in enumerate(p1_records):
+            if rec.get('Nama Pemain') == cur_p1_name:
+                p1_idx = i
+                break
+        
+        p1_selected_record = st.selectbox(
+            "Pilih Pemain 1:",
+            options=p1_records,
+            index=p1_idx if 0 <= p1_idx < len(p1_records) else 0,
+            format_func=format_player_picker,
+            key=f"p1_sel_box_{cur_p1_name}"
+        )
+        if p1_selected_record:
+            st.session_state['comp_p1'] = p1_selected_record.get('Nama Pemain')
+
+    with col_swap:
+        st.markdown("<div style='height: 48px;'></div>", unsafe_allow_html=True)
+        if st.button("🔄 Tukar", help="Tukar posisi Pemain 1 dan Pemain 2", use_container_width=True, key="btn_swap_p1_p2"):
+            t = st.session_state.get('comp_p1')
+            st.session_state['comp_p1'] = st.session_state.get('comp_p2')
+            st.session_state['comp_p2'] = t
+            st.rerun()
+
+    with col_sel2:
+        st.markdown("#### 🔴 Pemain 2 (Merah)")
+        f_p2_c1, f_p2_c2 = st.columns(2)
+        with f_p2_c1:
+            p2_pos_filter = st.selectbox("Filter Posisi (P2):", pos_options, key="p2_pos_filt")
+        with f_p2_c2:
+            p2_club_filter = st.selectbox("Filter Klub (P2):", club_options, key="p2_club_filt")
+        
+        p2_pool = df.copy()
+        if filter_played_only:
+            p2_pool = p2_pool[p2_pool['Menit Bermain'] > 0]
+        if p2_pos_filter != "Semua Posisi":
+            p2_pool = p2_pool[p2_pool['Posisi'] == p2_pos_filter]
+        if p2_club_filter != "Semua Klub":
+            p2_pool = p2_pool[p2_pool['Klub'] == p2_club_filter]
+            
+        if p2_pool.empty:
+            p2_pool = active_pool.copy()
+
+        p2_pool = p2_pool.sort_values(by="Total Poin", ascending=False)
+        p2_records = p2_pool.to_dict('records')
+        
+        cur_p2_name = st.session_state.get('comp_p2')
+        p2_names = [r.get('Nama Pemain') for r in p2_records]
+        if cur_p2_name not in p2_names and p2_records:
+            cur_p2_name = p2_records[0].get('Nama Pemain')
+            st.session_state['comp_p2'] = cur_p2_name
+
+        p2_idx = 0
+        for i, rec in enumerate(p2_records):
+            if rec.get('Nama Pemain') == cur_p2_name:
+                p2_idx = i
+                break
+                
+        p2_selected_record = st.selectbox(
+            "Pilih Pemain 2:",
+            options=p2_records,
+            index=p2_idx if 0 <= p2_idx < len(p2_records) else 0,
+            format_func=format_player_picker,
+            key=f"p2_sel_box_{cur_p2_name}"
+        )
+        if p2_selected_record:
+            st.session_state['comp_p2'] = p2_selected_record.get('Nama Pemain')
+
+    p1 = p1_selected_record
+    p2 = p2_selected_record
+
+    if not p1 or not p2:
+        st.warning("Silakan pilih kedua pemain untuk memulai komparasi radar.")
+        return
+
+    # Visual Profile Cards Row
+    st.divider()
+    card_col1, card_mid, card_col2 = st.columns([10, 2, 10])
+
+    with card_col1:
+        st.markdown(f"""
+        <div class="compare-card-p1">
+            <span class="compare-tag-p1">{p1.get('Posisi', '')} · {p1.get('Klub', '')}</span>
+            <h3 style="margin: 0 0 6px 0; color: #0284c7; font-weight: 800; font-size: 1.4rem;">{p1.get('Nama Pemain', '')}</h3>
+            <p style="margin: 0 0 10px 0; font-size: 0.85rem; color: #64748b;">{p1.get('Nama Lengkap', '')}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Harga", f"£{p1.get('Harga (£m)', 0):.1f}m")
+        with m2:
+            st.metric("Total Poin", f"{int(p1.get('Total Poin', 0))} pts")
+        with m3:
+            st.metric("Prediksi xPoin", f"{float(p1.get('xPoin', 0)):.2f} pts")
+        with m4:
+            st.metric("Form", f"{float(p1.get('Form', 0)):.2f}")
+
+    with card_mid:
+        st.markdown("""
+        <div style="display: flex; height: 100%; align-items: center; justify-content: center; padding-top: 30px;">
+            <div class="vs-circle">VS</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with card_col2:
+        st.markdown(f"""
+        <div class="compare-card-p2">
+            <span class="compare-tag-p2">{p2.get('Posisi', '')} · {p2.get('Klub', '')}</span>
+            <h3 style="margin: 0 0 6px 0; color: #e11d48; font-weight: 800; font-size: 1.4rem;">{p2.get('Nama Pemain', '')}</h3>
+            <p style="margin: 0 0 10px 0; font-size: 0.85rem; color: #64748b;">{p2.get('Nama Lengkap', '')}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Harga", f"£{p2.get('Harga (£m)', 0):.1f}m")
+        with m2:
+            st.metric("Total Poin", f"{int(p2.get('Total Poin', 0))} pts")
+        with m3:
+            st.metric("Prediksi xPoin", f"{float(p2.get('xPoin', 0)):.2f} pts")
+        with m4:
+            st.metric("Form", f"{float(p2.get('Form', 0)):.2f}")
+
+    # Radar Configuration Controls
+    st.markdown("### 🕸️ Grafik Radar Komparasi Statistik")
+    
+    ctrl1, ctrl2, ctrl3 = st.columns([2, 1, 1])
+    with ctrl1:
+        radar_preset = st.selectbox(
+            "Pilih Preset Metrik Radar:",
+            options=[
+                "🎯 Ofensif & Daya Serang (xG, xA, xGI/90, Gol, Asis, ICT, xPoin, Form)",
+                "⭐ Profil Komprehensif FPL (Total Poin, xPoin, Form, Avg Mins L5M, BPS, xGI/90, ICT, Poin/£m)",
+                "💰 Efisiensi Biaya / Value for Money (Poin/£m, xPoin/£m, Form, Avg Mins L5M, xGI/90, BPS, % Ownership)",
+                "🛡️ Defensif & Kiper (Clean Sheet, Def Contrib/90, Saves, Avg Mins L5M, BPS, xPoin, Kemudahan Jadwal)",
+                "🛠️ Kustom (Pilih Metrik Bebas)"
+            ],
+            key="radar_preset_choice"
+        )
+    with ctrl2:
+        norm_mode = st.selectbox(
+            "Skala Nilai Sumbu Radar:",
+            options=[
+                "Persentil Liga (0 - 100%)",
+                "Min-Max Normalisasi (0 - 100)",
+                "Nilai Aktual (Raw Values)"
+            ],
+            help="Skala Persentil direkomendasikan agar metrik dengan skala berbeda (misal menit, xG, poin, harga) dapat dibandingkan secara proporsional.",
+            key="radar_norm_mode"
+        )
+    with ctrl3:
+        cohort_mode = st.selectbox(
+            "Basis Komparasi Persentil/Min-Max:",
+            options=[
+                "Seluruh Pemain Liga (All Players)",
+                f"Sesama Posisi {p1.get('Nama Pemain')} ({p1.get('Posisi')})",
+                f"Sesama Posisi {p2.get('Nama Pemain')} ({p2.get('Posisi')})"
+            ],
+            key="radar_cohort_mode"
+        )
+
+    preset_metric_map = {
+        "🎯 Ofensif & Daya Serang (xG, xA, xGI/90, Gol, Asis, ICT, xPoin, Form)": [
+            'xG', 'xA', 'xGI per 90', 'Gol', 'Asis', 'ICT Index', 'xPoin', 'Form'
+        ],
+        "⭐ Profil Komprehensif FPL (Total Poin, xPoin, Form, Avg Mins L5M, BPS, xGI/90, ICT, Poin/£m)": [
+            'Total Poin', 'xPoin', 'Form', 'Avg Mins (L5M)', 'BPS', 'xGI per 90', 'ICT Index', 'Poin per £m'
+        ],
+        "💰 Efisiensi Biaya / Value for Money (Poin/£m, xPoin/£m, Form, Avg Mins L5M, xGI/90, BPS, % Ownership)": [
+            'Poin per £m', 'xPoin per £m', 'Form', 'Avg Mins (L5M)', 'xGI per 90', 'BPS', '% Ownership'
+        ],
+        "🛡️ Defensif & Kiper (Clean Sheet, Def Contrib/90, Saves, Avg Mins L5M, BPS, xPoin, Kemudahan Jadwal)": [
+            'Clean Sheet', 'Defensive Contribution per 90', 'Saves', 'Avg Mins (L5M)', 'BPS', 'xPoin', 'Kemudahan Jadwal'
+        ]
+    }
+
+    all_available_metrics = [
+        'Total Poin', 'xPoin', 'xPoin (Option B)', 'Form', 'Harga (£m)', 'Avg Mins (L5M)', 
+        'Menit Bermain', 'Gol', 'Asis', 'xG', 'xA', 'xGI', 'xG per 90', 'xA per 90', 'xGI per 90', 
+        'ICT Index', 'BPS', 'Bonus Poin', 'Clean Sheet', 'Saves', 'Defensive Contribution per 90', 
+        '% Ownership', 'Net Transfers GW', 'Poin per £m', 'xPoin per £m', 'Kemudahan Jadwal'
+    ]
+
+    if radar_preset == "🛠️ Kustom (Pilih Metrik Bebas)":
+        active_metric_keys = st.multiselect(
+            "Pilih minimal 3 metrik statistik untuk grafik radar:",
+            options=all_available_metrics,
+            default=['Total Poin', 'xPoin', 'xG', 'xA', 'Form', 'ICT Index', 'BPS', 'Poin per £m'],
+            key="radar_custom_metrics"
+        )
+    else:
+        active_metric_keys = preset_metric_map.get(radar_preset, preset_metric_map["🎯 Ofensif & Daya Serang (xG, xA, xGI/90, Gol, Asis, ICT, xPoin, Form)"])
+
+    if len(active_metric_keys) < 3:
+        st.warning("Pilih minimal 3 metrik agar poligon radar chart dapat divisualisasikan dengan proporsional.")
+        return
+
+    # Tentukan cohort data (persentil dihitung terhadap pemain aktif yang sudah bermain di EPL)
+    if f"Sesama Posisi {p1.get('Nama Pemain')}" in cohort_mode:
+        cohort_df = df[df['Posisi'] == p1.get('Posisi')]
+    elif f"Sesama Posisi {p2.get('Nama Pemain')}" in cohort_mode:
+        cohort_df = df[df['Posisi'] == p2.get('Posisi')]
+    else:
+        cohort_df = df
+
+    active_cohort = cohort_df[cohort_df['Menit Bermain'] > 0]
+    if not active_cohort.empty:
+        cohort_df = active_cohort
+    elif cohort_df.empty:
+        cohort_df = df
+
+    METRIC_META = {
+        'xG': {'label': 'xG (Exp. Goals)', 'higher_better': True, 'fmt': '{:.2f}'},
+        'xA': {'label': 'xA (Exp. Assists)', 'higher_better': True, 'fmt': '{:.2f}'},
+        'xGI': {'label': 'xGI (Goal Involv.)', 'higher_better': True, 'fmt': '{:.2f}'},
+        'xG per 90': {'label': 'xG / 90 Mins', 'higher_better': True, 'fmt': '{:.2f}'},
+        'xA per 90': {'label': 'xA / 90 Mins', 'higher_better': True, 'fmt': '{:.2f}'},
+        'xGI per 90': {'label': 'xGI / 90 Mins', 'higher_better': True, 'fmt': '{:.2f}'},
+        'Gol': {'label': 'Total Gol', 'higher_better': True, 'fmt': '{:.0f}'},
+        'Asis': {'label': 'Total Asis', 'higher_better': True, 'fmt': '{:.0f}'},
+        'Total Poin': {'label': 'Total Poin', 'higher_better': True, 'fmt': '{:.0f} pts'},
+        'xPoin': {'label': 'Prediksi xPoin GW', 'higher_better': True, 'fmt': '{:.2f} pts'},
+        'xPoin (Option B)': {'label': 'xPoin (Opt B)', 'higher_better': True, 'fmt': '{:.2f} pts'},
+        'Form': {'label': 'Form Terkini', 'higher_better': True, 'fmt': '{:.2f}'},
+        'Harga (£m)': {'label': 'Harga (£m)', 'higher_better': False, 'fmt': '£{:.1f}m'},
+        'Avg Mins (L5M)': {'label': 'Avg Mins (L5M)', 'higher_better': True, 'fmt': '{:.1f} m'},
+        'Menit Bermain': {'label': 'Menit Bermain', 'higher_better': True, 'fmt': '{:.0f} m'},
+        'ICT Index': {'label': 'ICT Index', 'higher_better': True, 'fmt': '{:.1f}'},
+        'BPS': {'label': 'BPS Score', 'higher_better': True, 'fmt': '{:.0f}'},
+        'Bonus Poin': {'label': 'Bonus Poin', 'higher_better': True, 'fmt': '{:.0f}'},
+        'Clean Sheet': {'label': 'Clean Sheet', 'higher_better': True, 'fmt': '{:.0f}'},
+        'Saves': {'label': 'Saves', 'higher_better': True, 'fmt': '{:.0f}'},
+        'Defensive Contribution per 90': {'label': 'Def Contrib / 90', 'higher_better': True, 'fmt': '{:.2f}'},
+        '% Ownership': {'label': '% Ownership', 'higher_better': True, 'fmt': '{:.1f}%'},
+        'Net Transfers GW': {'label': 'Net Transfers GW', 'higher_better': True, 'fmt': '{:+.0f}'},
+        'Poin per £m': {'label': 'Poin / £m', 'higher_better': True, 'fmt': '{:.2f}'},
+        'xPoin per £m': {'label': 'xPoin / £m', 'higher_better': True, 'fmt': '{:.2f}'},
+        'Kemudahan Jadwal': {'label': 'Kemudahan Jadwal', 'higher_better': True, 'fmt': '{:.1f}'},
+    }
+
+    theta_labels = []
+    r_p1 = []
+    r_p2 = []
+    customdata_p1 = []
+    customdata_p2 = []
+
+    h2h_rows = []
+    p1_wins = 0
+    p2_wins = 0
+    ties = 0
+
+    for m_key in active_metric_keys:
+        meta = METRIC_META.get(m_key, {'label': m_key, 'higher_better': True, 'fmt': '{:.2f}'})
+        lbl = meta['label']
+        higher_better = meta['higher_better']
+        fmt = meta['fmt']
+
+        val1 = float(p1.get(m_key, 0.0) or 0.0)
+        val2 = float(p2.get(m_key, 0.0) or 0.0)
+
+        try:
+            val1_str = fmt.format(val1)
+        except (ValueError, TypeError):
+            val1_str = str(val1)
+        try:
+            val2_str = fmt.format(val2)
+        except (ValueError, TypeError):
+            val2_str = str(val2)
+
+        if "Persentil" in norm_mode:
+            c_vals = cohort_df[m_key].dropna().astype(float).values if m_key in cohort_df.columns else np.array([val1, val2])
+            if len(c_vals) > 0:
+                pct1 = float(percentileofscore(c_vals, val1, kind='rank'))
+                pct2 = float(percentileofscore(c_vals, val2, kind='rank'))
+                if not higher_better:
+                    pct1 = 100.0 - pct1
+                    pct2 = 100.0 - pct2
+            else:
+                pct1, pct2 = 50.0, 50.0
+            score1 = round(pct1, 1)
+            score2 = round(pct2, 1)
+        elif "Min-Max" in norm_mode:
+            c_vals = cohort_df[m_key].dropna().astype(float).values if m_key in cohort_df.columns else np.array([val1, val2])
+            if len(c_vals) > 0:
+                c_min, c_max = float(np.min(c_vals)), float(np.max(c_vals))
+                if c_max > c_min:
+                    s1 = ((val1 - c_min) / (c_max - c_min)) * 100.0
+                    s2 = ((val2 - c_min) / (c_max - c_min)) * 100.0
+                    if not higher_better:
+                        s1 = 100.0 - s1
+                        s2 = 100.0 - s2
+                else:
+                    s1, s2 = 50.0, 50.0
+            else:
+                s1, s2 = 50.0, 50.0
+            score1 = round(float(np.clip(s1, 0.0, 100.0)), 1)
+            score2 = round(float(np.clip(s2, 0.0, 100.0)), 1)
+        else:
+            score1 = val1
+            score2 = val2
+
+        theta_labels.append(lbl)
+        r_p1.append(score1)
+        r_p2.append(score2)
+        customdata_p1.append([val1_str, score1])
+        customdata_p2.append([val2_str, score2])
+
+        diff = val1 - val2
+        diff_str = f"{diff:+.2f}" if abs(diff) < 100 else f"{diff:+.0f}"
+        if abs(diff) < 1e-4:
+            winner = "⚪ Seimbang"
+            ties += 1
+        elif (val1 > val2 and higher_better) or (val1 < val2 and not higher_better):
+            winner = f"🔵 {p1.get('Nama Pemain')}"
+            p1_wins += 1
+        else:
+            winner = f"🔴 {p2.get('Nama Pemain')}"
+            p2_wins += 1
+
+        h2h_rows.append({
+            'Metrik': lbl,
+            f"{p1.get('Nama Pemain')} (🔵)": val1_str,
+            f"{p2.get('Nama Pemain')} (🔴)": val2_str,
+            'Selisih (P1 - P2)': diff_str,
+            'Keunggulan': winner
+        })
+
+    # Tutup poligon polar (ulangi titik pertama)
+    theta_closed = theta_labels + [theta_labels[0]]
+    r_p1_closed = r_p1 + [r_p1[0]]
+    r_p2_closed = r_p2 + [r_p2[0]]
+    customdata_p1_closed = customdata_p1 + [customdata_p1[0]]
+    customdata_p2_closed = customdata_p2 + [customdata_p2[0]]
+
+    p1_name = p1.get('Nama Pemain', 'Pemain 1')
+    p2_name = p2.get('Nama Pemain', 'Pemain 2')
+    p1_club = p1.get('Klub', '-')
+    p2_club = p2.get('Klub', '-')
+
+    fig = go.Figure()
+
+    # Trace Pemain 1
+    fig.add_trace(go.Scatterpolar(
+        r=r_p1_closed,
+        theta=theta_closed,
+        fill='toself',
+        name=f"🔵 {p1_name} ({p1_club})",
+        line=dict(color='#0284c7', width=3),
+        fillcolor='rgba(2, 132, 199, 0.22)',
+        marker=dict(size=7, color='#0284c7', symbol='circle'),
+        customdata=customdata_p1_closed,
+        hovertemplate=(
+            "<b>%{data.name}</b><br>"
+            "Metrik: <b>%{theta}</b><br>"
+            "Nilai Aktual: <b>%{customdata[0]}</b><br>"
+            "Skor Radar: <b>%{r:.1f}</b>"
+            "<extra></extra>"
+        )
+    ))
+
+    # Trace Pemain 2
+    fig.add_trace(go.Scatterpolar(
+        r=r_p2_closed,
+        theta=theta_closed,
+        fill='toself',
+        name=f"🔴 {p2_name} ({p2_club})",
+        line=dict(color='#e11d48', width=3),
+        fillcolor='rgba(225, 29, 72, 0.22)',
+        marker=dict(size=7, color='#e11d48', symbol='diamond'),
+        customdata=customdata_p2_closed,
+        hovertemplate=(
+            "<b>%{data.name}</b><br>"
+            "Metrik: <b>%{theta}</b><br>"
+            "Nilai Aktual: <b>%{customdata[0]}</b><br>"
+            "Skor Radar: <b>%{r:.1f}</b>"
+            "<extra></extra>"
+        )
+    ))
+
+    max_val = max(max(r_p1), max(r_p2)) if len(r_p1) > 0 else 100
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 100] if "Nilai Aktual" not in norm_mode else [0, max_val * 1.15 if max_val > 0 else 10],
+                gridcolor="#e2e8f0",
+                linecolor="#cbd5e1",
+                tickfont=dict(size=10, color="#64748b", family="Plus Jakarta Sans"),
+                ticksuffix="%" if "Persentil" in norm_mode else ""
+            ),
+            angularaxis=dict(
+                gridcolor="#e2e8f0",
+                linecolor="#cbd5e1",
+                tickfont=dict(size=11, color="#0f172a", family="Plus Jakarta Sans", weight="bold")
+            ),
+            bgcolor="#ffffff"
+        ),
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font=dict(family="Plus Jakarta Sans", color="#1e293b"),
+        margin=dict(l=50, r=50, t=50, b=50),
+        height=620,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.06,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=13, weight="bold")
+        )
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("💡 *Arahkan kursor ke titik sudut radar untuk melihat nilai riil FPL dan skor persentil masing-masing pemain.*")
+
+    # Head to Head Comparison Table
+    st.divider()
+    st.markdown("### 📊 Head-to-Head Matriks Statistik & Pemenang Metrik")
+
+    score_c1, score_c2, score_c3 = st.columns(3)
+    with score_c1:
+        st.metric(f"🔵 Keunggulan {p1_name}", f"{p1_wins} Metrik", f"{(p1_wins / len(active_metric_keys) * 100):.0f}% Dominasi")
+    with score_c2:
+        st.metric(f"🔴 Keunggulan {p2_name}", f"{p2_wins} Metrik", f"{(p2_wins / len(active_metric_keys) * 100):.0f}% Dominasi")
+    with score_c3:
+        st.metric("⚪ Imbang / Seimbang", f"{ties} Metrik")
+
+    h2h_df = pd.DataFrame(h2h_rows)
+    st.dataframe(h2h_df, use_container_width=True, height=min(600, len(h2h_df) * 38 + 50))
+
+    # Catatan Analisis Scout FPL
+    st.markdown("### 🧠 Catatan Analisis Scout FPL (Tactical Verdict)")
+
+    p1_cost = float(p1.get('Harga (£m)', 0.0) or 0.0)
+    p2_cost = float(p2.get('Harga (£m)', 0.0) or 0.0)
+    p1_xpts = float(p1.get('xPoin', 0.0) or 0.0)
+    p2_xpts = float(p2.get('xPoin', 0.0) or 0.0)
+    p1_pts = int(p1.get('Total Poin', 0) or 0)
+    p2_pts = int(p2.get('Total Poin', 0) or 0)
+    p1_ppm = p1_pts / p1_cost if p1_cost > 0 else 0.0
+    p2_ppm = p2_pts / p2_cost if p2_cost > 0 else 0.0
+    p1_xg = float(p1.get('xG', 0.0) or 0.0)
+    p2_xg = float(p2.get('xG', 0.0) or 0.0)
+    p1_xa = float(p1.get('xA', 0.0) or 0.0)
+    p2_xa = float(p2.get('xA', 0.0) or 0.0)
+    p1_fdr = float(p1.get('FDR1', 3.0) or 3.0)
+    p2_fdr = float(p2.get('FDR1', 3.0) or 3.0)
+
+    if p1_xpts > p2_xpts + 0.3:
+        xpts_insight = f"**{p1_name}** diunggulkan model untuk Gameweek mendatang dengan proyeksi **{p1_xpts:.2f} pts** vs **{p2_name}** ({p2_xpts:.2f} pts), selisih **+{p1_xpts - p2_xpts:.2f} pts**."
+    elif p2_xpts > p1_xpts + 0.3:
+        xpts_insight = f"**{p2_name}** diunggulkan model untuk Gameweek mendatang dengan proyeksi **{p2_xpts:.2f} pts** vs **{p1_name}** ({p1_xpts:.2f} pts), selisih **+{p2_xpts - p1_xpts:.2f} pts**."
+    else:
+        xpts_insight = f"Kedua pemain memiliki proyeksi xPoin yang sangat berimbang untuk Gameweek mendatang ({p1_xpts:.2f} pts vs {p2_xpts:.2f} pts)."
+
+    price_diff = abs(p1_cost - p2_cost)
+    if p1_cost < p2_cost and p1_ppm >= p2_ppm:
+        value_insight = f"**{p1_name}** lebih hemat **£{price_diff:.1f}m** dan memberikan efisiensi poin per juta lebih tinggi (**{p1_ppm:.2f} pts/£m** vs {p2_ppm:.2f} pts/£m)."
+    elif p2_cost < p1_cost and p2_ppm >= p1_ppm:
+        value_insight = f"**{p2_name}** lebih hemat **£{price_diff:.1f}m** dan memberikan efisiensi poin per juta lebih tinggi (**{p2_ppm:.2f} pts/£m** vs {p1_ppm:.2f} pts/£m)."
+    elif p1_ppm > p2_ppm:
+        value_insight = f"Meskipun terdapat selisih harga £{price_diff:.1f}m, **{p1_name}** menghasilkan efisiensi akumulasi poin lebih baik ({p1_ppm:.2f} vs {p2_ppm:.2f} pts/£m)."
+    else:
+        value_insight = f"**{p2_name}** menghasilkan efisiensi akumulasi poin per harga lebih tinggi ({p2_ppm:.2f} vs {p1_ppm:.2f} pts/£m)."
+
+    style1 = "pencetak gol utama (finisher)" if p1_xg >= p1_xa else "kreator peluang (playmaker)"
+    style2 = "pencetak gol utama (finisher)" if p2_xg >= p2_xa else "kreator peluang (playmaker)"
+    threat_insight = f"Secara profil ancaman, **{p1_name}** bertindak dominan sebagai *{style1}* (xG: {p1_xg:.2f}, xA: {p1_xa:.2f}), sedangkan **{p2_name}** berperan sebagai *{style2}* (xG: {p2_xg:.2f}, xA: {p2_xa:.2f})."
+
+    opp1 = p1.get('Lawan GW Berikutnya', '-')
+    opp2 = p2.get('Lawan GW Berikutnya', '-')
+    if p1_fdr < p2_fdr:
+        fix_insight = f"Jadwal terdekat menguntungkan **{p1_name}** (Lawan: {opp1}, FDR {p1_fdr:.0f}) dibanding **{p2_name}** (Lawan: {opp2}, FDR {p2_fdr:.0f})."
+    elif p2_fdr < p1_fdr:
+        fix_insight = f"Jadwal terdekat menguntungkan **{p2_name}** (Lawan: {opp2}, FDR {p2_fdr:.0f}) dibanding **{p1_name}** (Lawan: {opp1}, FDR {p1_fdr:.0f})."
+    else:
+        fix_insight = f"Tingkat kesulitan lawan berikutnya setara (FDR {p1_fdr:.0f}): {p1_name} vs {opp1} dan {p2_name} vs {opp2}."
+
+    st.markdown(f"""
+    <div class="radar-summary-box">
+        <h4 style="margin: 0 0 10px 0; color: #37003c; font-weight: 800;">📋 Kesimpulan & Rekomendasi Scout:</h4>
+        <ul style="margin: 0; padding-left: 20px; color: #334155; line-height: 1.7; font-size: 0.92rem;">
+            <li><strong>Prediksi Gameweek Mendatang:</strong> {xpts_insight}</li>
+            <li><strong>Efisiensi Anggaran (Value for Money):</strong> {value_insight}</li>
+            <li><strong>Karakteristik Serangan:</strong> {threat_insight}</li>
+            <li><strong>Faktor Jadwal Terdekat:</strong> {fix_insight}</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 def main():
     # Brand Top Banner
     st.markdown("""
@@ -1308,11 +2380,13 @@ def main():
         ]
 
     # Tabs Layout
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Player Stats & xPoin", 
-        "📈 Visualisasi Data & Korelasi", 
+        "📈 Visualisasi Data & Radar Pemain", 
+        "🛡️ Team Strength Analysis",
         "📅 Fixtures & FDR", 
-        "🧮 Option B: Component Model xPoin"
+        "🧮 Option B: Component Model xPoin",
+        "🔮 Option C: Current Season Model"
     ])
 
     # -------------------------------------------------------------------------
@@ -1342,9 +2416,10 @@ def main():
         ]
         
         with st.expander("⚙️ Pilih Kolom yang Ingin Ditampilkan pada Tabel", expanded=False):
+            available_table_cols = [c for c in players_df.columns if c not in ['id', 'team']]
             selected_cols = st.multiselect(
                 "Centang/Pilih kolom data FPL yang ingin dimunculkan di tabel:",
-                options=list(players_df.columns),
+                options=available_table_cols,
                 default=default_cols,
                 key="table_cols_picker"
             )
@@ -1496,14 +2571,336 @@ def main():
             }
         )
 
+        # ---------------------------------------------------------------------
+        # ENHANCED SECTION: PLAYER PERFORMANCE & PROGRESSION OVER TIME
+        # ---------------------------------------------------------------------
+        st.divider()
+        st.markdown("### 📈 Visualisasi Tren & Progresi Performa Pemain per Gameweek")
+        st.write("Visualisasikan performa pertandingan demi pertandingan pemain sepanjang musim berjalan (total poin, gol, asis, xG, xA, dan menit bermain) menggunakan data real-time API FPL.")
+
+        # Player Selector
+        player_pool = filtered_players if not filtered_players.empty else players_df
+        player_choices = player_pool.to_dict('records')
+        
+        default_idx = 0
+        for i, p in enumerate(player_choices):
+            if p.get('Nama Pemain') in ['Haaland', 'M.Salah', 'Saka', 'Palmer']:
+                default_idx = i
+                break
+
+        def format_player_option(p):
+            if not p or not isinstance(p, dict):
+                return ""
+            p_name = p.get('Nama Pemain', '')
+            p_klub = p.get('Klub', '')
+            p_pos = p.get('Posisi', '')
+            p_pts = p.get('Total Poin', 0)
+            try:
+                price_str = f"£{float(p.get('Harga (£m)', 0.0)):.1f}m"
+            except (ValueError, TypeError):
+                price_str = "-"
+            try:
+                xpts_str = f"{float(p.get('xPoin', 0.0)):.2f}"
+            except (ValueError, TypeError):
+                xpts_str = "-"
+            return f"{p_name} ({p_klub} - {p_pos}) · {price_str} · Total Poin: {p_pts} pts · xPoin: {xpts_str}"
+
+        sel_col1, sel_col2 = st.columns([3, 1])
+        with sel_col1:
+            selected_player = st.selectbox(
+                "Pilih Pemain untuk Melihat Tren Performa Gameweek:",
+                options=player_choices,
+                index=default_idx if 0 <= default_idx < len(player_choices) else 0,
+                format_func=format_player_option,
+                key="player_trend_selector"
+            )
+        with sel_col2:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            view_mode = st.radio(
+                "Mode Tampilan Nilai:",
+                options=["Per Gameweek (Match)", "Akumulatif (Kumulatif)"],
+                horizontal=True,
+                key="player_prog_mode"
+            )
+
+        if selected_player:
+            sel_pid = selected_player.get('id')
+            if not sel_pid:
+                for el in fpl_data.get('elements', []):
+                    if el.get('web_name') == selected_player.get('Nama Pemain'):
+                        sel_pid = el.get('id')
+                        break
+            sel_pname = selected_player.get('Nama Pemain', 'Pemain')
+            sel_club = selected_player.get('Klub', '-')
+            sel_pos = selected_player.get('Posisi', '-')
+            sel_cost = float(selected_player.get('Harga (£m)', 0.0) or 0.0)
+            sel_pts = int(selected_player.get('Total Poin', 0) or 0)
+            sel_xg = float(selected_player.get('xG', 0.0) or 0.0)
+            sel_xa = float(selected_player.get('xA', 0.0) or 0.0)
+            sel_goals = int(selected_player.get('Gol', 0) or 0)
+            sel_assists = int(selected_player.get('Asis', 0) or 0)
+            sel_form = float(selected_player.get('Form', 0.0) or 0.0)
+            sel_status = selected_player.get('Status', 'Tersedia')
+            sel_chance = selected_player.get('Peluang Main GW (%)', 100)
+            sel_next_opp = selected_player.get('Lawan GW Berikutnya', '-')
+            sel_fdr = selected_player.get('FDR1', 3.0)
+
+            # Quick Player Bio & KPI Metrics Card Row
+            kp1, kp2, kp3, kp4, kp5, kp6 = st.columns(6)
+            with kp1:
+                st.metric("Total Poin", f"{sel_pts} pts", f"Form: {sel_form}")
+            with kp2:
+                st.metric("Total Gol / xG", f"{sel_goals} / {sel_xg:.2f}", f"xG: {sel_xg:.2f}")
+            with kp3:
+                st.metric("Total Asis / xA", f"{sel_assists} / {sel_xa:.2f}", f"xA: {sel_xa:.2f}")
+            with kp4:
+                st.metric("Harga (£m)", f"£{sel_cost:.1f}m", f"{sel_pos} · {sel_club}")
+            with kp5:
+                st.metric("Status Kebugaran", sel_status, f"Peluang: {sel_chance}%")
+            with kp6:
+                st.metric("Lawan Berikutnya", sel_next_opp, f"FDR: {sel_fdr}")
+
+            # Fetch player element summary
+            with st.spinner(f"Mengambil data histori pertandingan {sel_pname} dari API FPL..."):
+                p_summary = fetch_player_element_summary(sel_pid)
+
+            p_history = p_summary.get('history', [])
+            p_past = p_summary.get('history_past', [])
+            p_fixtures = p_summary.get('fixtures', [])
+
+            if p_history:
+                # Build match-by-match dataframe
+                hist_rows = []
+                for h in p_history:
+                    opp_id = h.get('opponent_team')
+                    opp_name = teams_dict.get(opp_id, f"Team {opp_id}")
+                    loc = "H" if h.get('was_home') else "A"
+                    gw_round = h.get('round', 1)
+                    gw_label = f"GW{gw_round} vs {opp_name} ({loc})"
+                    
+                    hist_rows.append({
+                        'Gameweek': f"GW{gw_round}",
+                        'Label Pertandingan': gw_label,
+                        'GW_Num': gw_round,
+                        'Lawan': f"{opp_name} ({loc})",
+                        'Total Poin': int(h.get('total_points', 0)),
+                        'Gol': int(h.get('goals_scored', 0)),
+                        'Asis': int(h.get('assists', 0)),
+                        'xG': round(float(h.get('expected_goals', 0.0)), 2),
+                        'xA': round(float(h.get('expected_assists', 0.0)), 2),
+                        'xGI': round(float(h.get('expected_goal_involvements', 0.0)), 2),
+                        'xGC': round(float(h.get('expected_goals_conceded', 0.0)), 2),
+                        'Menit Bermain': int(h.get('minutes', 0)),
+                        'BPS': int(h.get('bps', 0)),
+                        'Bonus Poin': int(h.get('bonus', 0)),
+                        'Clean Sheet': int(h.get('clean_sheets', 0)),
+                        'Saves': int(h.get('saves', 0)),
+                        'Harga (£m)': h.get('value', 0) / 10.0,
+                    })
+
+                df_phist = pd.DataFrame(hist_rows).sort_values(by='GW_Num')
+
+                # Calculate cumulative metrics
+                df_phist['Kumulatif Total Poin'] = df_phist['Total Poin'].cumsum()
+                df_phist['Kumulatif Gol'] = df_phist['Gol'].cumsum()
+                df_phist['Kumulatif Asis'] = df_phist['Asis'].cumsum()
+                df_phist['Kumulatif xG'] = df_phist['xG'].cumsum().round(2)
+                df_phist['Kumulatif xA'] = df_phist['xA'].cumsum().round(2)
+                df_phist['Kumulatif xGI'] = df_phist['xGI'].cumsum().round(2)
+                df_phist['Kumulatif Menit Bermain'] = df_phist['Menit Bermain'].cumsum()
+
+                # Metric multiselect
+                available_metrics = ['Total Poin', 'xG', 'xA', 'Gol', 'Asis', 'xGI', 'Menit Bermain', 'BPS', 'Bonus Poin']
+                default_metrics = ['Total Poin', 'xG', 'xA', 'Gol', 'Asis']
+                
+                m_col1, m_col2 = st.columns([3, 1])
+                with m_col1:
+                    chosen_metrics = st.multiselect(
+                        "Pilih Metrik untuk Ditampilkan pada Grafik:",
+                        options=available_metrics,
+                        default=default_metrics,
+                        key="p_metrics_multiselect"
+                    )
+                with m_col2:
+                    chart_engine = st.selectbox(
+                        "Tipe Grafik:",
+                        options=["📈 Streamlit Line Chart", "📶 Streamlit Bar Chart", "✨ Dual-Axis Plotly Combo", "🌊 Streamlit Area Chart"],
+                        key="p_chart_engine"
+                    )
+
+                if not chosen_metrics:
+                    chosen_metrics = default_metrics
+
+                is_cum = (view_mode == "Akumulatif (Kumulatif)")
+                plot_cols = [f"Kumulatif {m}" if is_cum else m for m in chosen_metrics]
+                
+                chart_df = df_phist.set_index('Label Pertandingan')[plot_cols].copy()
+                if is_cum:
+                    chart_df.columns = [f"{m} (Kumulatif)" for m in chosen_metrics]
+
+                # Render Chart using Streamlit Charting Capabilities
+                st.markdown(f"##### 📊 Grafik Progresi {sel_pname} ({view_mode})")
+                
+                if chart_engine == "📈 Streamlit Line Chart":
+                    st.line_chart(chart_df, use_container_width=True)
+                elif chart_engine == "📶 Streamlit Bar Chart":
+                    st.bar_chart(chart_df, use_container_width=True)
+                elif chart_engine == "🌊 Streamlit Area Chart":
+                    st.area_chart(chart_df, use_container_width=True)
+                else:
+                    fig_combo = go.Figure()
+                    
+                    pts_col = 'Kumulatif Total Poin' if is_cum else 'Total Poin'
+                    if 'Total Poin' in chosen_metrics:
+                        fig_combo.add_trace(go.Bar(
+                            x=df_phist['Label Pertandingan'],
+                            y=df_phist[pts_col],
+                            name=f"{pts_col}",
+                            marker_color='#37003c',
+                            opacity=0.85,
+                            yaxis='y1'
+                        ))
+                    
+                    line_colors = {
+                        'xG': '#00ff85',
+                        'xA': '#0284c7',
+                        'Gol': '#e11d48',
+                        'Asis': '#f59e0b',
+                        'xGI': '#8b5cf6',
+                        'Menit Bermain': '#64748b',
+                        'BPS': '#10b981',
+                        'Bonus Poin': '#d97706'
+                    }
+                    
+                    for m in chosen_metrics:
+                        if m == 'Total Poin':
+                            continue
+                        col_name = f"Kumulatif {m}" if is_cum else m
+                        use_sec = (m in ['xG', 'xA', 'xGI', 'Gol', 'Asis'] and 'Total Poin' in chosen_metrics and not is_cum)
+                        
+                        fig_combo.add_trace(go.Scatter(
+                            x=df_phist['Label Pertandingan'],
+                            y=df_phist[col_name],
+                            name=col_name,
+                            mode='lines+markers',
+                            line=dict(width=3, color=line_colors.get(m, '#0284c7')),
+                            marker=dict(size=8),
+                            yaxis='y2' if use_sec else 'y1'
+                        ))
+                    
+                    fig_combo.update_layout(
+                        paper_bgcolor="#ffffff",
+                        plot_bgcolor="#f8fafc",
+                        font=dict(family="Plus Jakarta Sans", size=12, color="#1e293b"),
+                        margin=dict(l=30, r=30, t=40, b=30),
+                        height=440,
+                        hovermode="x unified",
+                        xaxis=dict(gridcolor="#e2e8f0", title="Gameweek / Laga Pertandingan"),
+                        yaxis=dict(gridcolor="#e2e8f0", title="Total Poin / Angka", side='left'),
+                        yaxis2=dict(
+                            title="Expected Metrics (xG / xA / Gol / Asis)",
+                            overlaying='y',
+                            side='right',
+                            showgrid=False
+                        ) if any(m in ['xG', 'xA', 'xGI', 'Gol', 'Asis'] for m in chosen_metrics) and 'Total Poin' in chosen_metrics and not is_cum else None,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    )
+                    st.plotly_chart(fig_combo, use_container_width=True)
+
+                st.caption("💡 *Tip: Anda dapat beralih antara nilai per laga dan progresi kumulatif sepanjang musim untuk menganalisis tren performa pemain.*")
+
+                # Match-by-match breakdown table
+                st.markdown(f"##### 📋 Rincian Match-by-Match Gameweek ({sel_pname})")
+                display_cols = ['Gameweek', 'Lawan', 'Total Poin', 'Gol', 'Asis', 'xG', 'xA', 'xGI', 'Menit Bermain', 'BPS', 'Bonus Poin', 'Clean Sheet', 'Saves']
+                st.dataframe(
+                    df_phist[display_cols],
+                    use_container_width=True,
+                    column_config={
+                        "Total Poin": st.column_config.NumberColumn(format="%d pts"),
+                        "Gol": st.column_config.NumberColumn(format="%d"),
+                        "Asis": st.column_config.NumberColumn(format="%d"),
+                        "xG": st.column_config.NumberColumn(format="%.2f"),
+                        "xA": st.column_config.NumberColumn(format="%.2f"),
+                        "xGI": st.column_config.NumberColumn(format="%.2f"),
+                        "Menit Bermain": st.column_config.NumberColumn(format="%d mins"),
+                        "BPS": st.column_config.NumberColumn(format="%d"),
+                        "Bonus Poin": st.column_config.NumberColumn(format="%d")
+                    }
+                )
+            else:
+                st.info(f"ℹ️ {sel_pname} belum mencatatkan menit bermain pada pertandingan Premier League musim ini.")
+
+            # Past Seasons Career Expander
+            if p_past:
+                with st.expander(f"🏛️ Tren Riwayat Multi-Musim Sebelumnya ({sel_pname})", expanded=False):
+                    st.write(f"Progresi performa {sel_pname} pada musim-musim Premier League sebelumnya:")
+                    past_rows = []
+                    for s in p_past:
+                        past_rows.append({
+                            'Musim': s.get('season_name'),
+                            'Total Poin': int(s.get('total_points', 0)),
+                            'Gol': int(s.get('goals_scored', 0)),
+                            'Asis': int(s.get('assists', 0)),
+                            'xG': round(float(s.get('expected_goals', 0.0)), 2),
+                            'xA': round(float(s.get('expected_assists', 0.0)), 2),
+                            'Menit Bermain': int(s.get('minutes', 0)),
+                            'Clean Sheet': int(s.get('clean_sheets', 0)),
+                            'BPS': int(s.get('bps', 0)),
+                            'Harga Awal (£m)': s.get('start_cost', 0) / 10.0,
+                            'Harga Akhir (£m)': s.get('end_cost', 0) / 10.0,
+                        })
+                    df_past = pd.DataFrame(past_rows)
+                    
+                    st.line_chart(df_past.set_index('Musim')[['Total Poin', 'Gol', 'Asis', 'xG', 'xA']], use_container_width=True)
+                    st.dataframe(df_past, use_container_width=True)
+
+            # Upcoming Fixtures Expander
+            if p_fixtures:
+                with st.expander(f"🗓️ Jadwal Pertandingan Mendatang & FDR ({sel_pname})", expanded=False):
+                    st.write(f"Daftar laga mendatang {sel_pname} ({sel_club}) beserta tingkat kesulitan:")
+                    next_rows = []
+                    for f in p_fixtures[:8]:
+                        opp_id = f.get('team_a') if f.get('is_home') else f.get('team_h')
+                        opp_name = teams_dict.get(opp_id, f"Team {opp_id}")
+                        loc = "🏠 Home" if f.get('is_home') else "✈️ Away"
+                        diff = f.get('difficulty', 3)
+                        diff_label = {
+                            1: "🟢 Sangat Mudah (1)",
+                            2: "🟢 Mudah (2)",
+                            3: "⚪ Netral / Sedang (3)",
+                            4: "🔴 Sulit (4)",
+                            5: "🔴 Sangat Sulit (5)"
+                        }.get(diff, f"Rating {diff}")
+                        
+                        next_rows.append({
+                            'Gameweek': f"GW{f.get('event')}",
+                            'Lawan': opp_name,
+                            'Lokasi': loc,
+                            'FDR': diff,
+                            'Tingkat Kesulitan': diff_label,
+                            'Waktu Kickoff': f.get('kickoff_time', '-')[:10] if f.get('kickoff_time') else '-'
+                        })
+                    df_next_fix = pd.DataFrame(next_rows)
+                    st.dataframe(
+                        df_next_fix,
+                        use_container_width=True,
+                        column_config={
+                            "FDR": st.column_config.NumberColumn(format="%d")
+                        }
+                    )
+
     # -------------------------------------------------------------------------
     # TAB 2: VISUALIZATION & PEARSON CORRELATION (PLOTLY)
     # -------------------------------------------------------------------------
     with tab2:
-        st.subheader("📈 Visualisasi Interaktif & Analisis Korelasi Pearson")
-        st.write("Analisis hubungan antar variabel statistik pemain dengan Scatter Plot interaktif Plotly dan tren regresi linear.")
+        st.subheader("📈 Visualisasi Interaktif & Radar Komparasi Pemain")
+        st.write("Analisis hubungan antar variabel statistik pemain, perbandingan agregat klub, serta komparasi head-to-head 2 pemain dengan grafik radar interaktif.")
 
-        chart_subtab1, chart_subtab2 = st.tabs(["🔵 Scatter Plot & Pearson Correlation", "📊 Bar Chart Agregat Klub"])
+        chart_subtab1, chart_subtab2, chart_subtab3 = st.tabs([
+            "🔵 Scatter Plot & Pearson Correlation", 
+            "📊 Bar Chart Agregat Klub",
+            "⚔️ Komparasi 2 Pemain (Radar Chart)"
+        ])
 
         # SECTION 1: SCATTER PLOT & PEARSON R
         with chart_subtab1:
@@ -1637,10 +3034,320 @@ def main():
 
                 st.plotly_chart(bar_fig, use_container_width=True)
 
+        # SECTION 3: PLAYER COMPARISON RADAR CHART
+        with chart_subtab3:
+            render_player_comparison_radar_tab(players_df, fpl_data, teams_dict)
+
     # -------------------------------------------------------------------------
-    # TAB 3: FIXTURES & FDR SUMMARY
+    # TAB 3: TEAM STRENGTH ANALYSIS MODULE
     # -------------------------------------------------------------------------
     with tab3:
+        st.subheader("🛡️ Analisis Komprehensif Kekuatan Tim Premier League (Team Strength Analysis)")
+        st.write("Modul agregasi statistik 20 klub Premier League: mengevaluasi rata-rata poin FPL pemain, daya gedor ofensif (Gol, xG, xA), soliditas pertahanan (Clean Sheet, xGC, Saves), serta tingkat kemudahan jadwal pertandingan mendatang (FDR).")
+
+        df_teams = calculate_team_strength_analysis(fpl_data, players_df, fdr_summary)
+
+        if not df_teams.empty:
+            # 1. Highlights / Summary KPI Row
+            top_strength_team = df_teams.sort_values(by="Indeks Kekuatan", ascending=False).iloc[0]
+            top_attack_team = df_teams.sort_values(by="Total xG", ascending=False).iloc[0]
+            top_defense_team = df_teams.sort_values(by="Clean Sheet", ascending=False).iloc[0]
+            easiest_fdr_team = df_teams.sort_values(by="FDR3", ascending=True).iloc[0]
+
+            tk1, tk2, tk3, tk4 = st.columns(4)
+            with tk1:
+                st.metric(
+                    "👑 Tim Terkuat (Indeks Tertinggi)",
+                    f"{top_strength_team['Klub']} ({top_strength_team['Indeks Kekuatan']})",
+                    top_strength_team['Kategori Tim']
+                )
+            with tk2:
+                st.metric(
+                    "⚔️ Serangan Tertajam",
+                    f"{top_attack_team['Klub']} ({top_attack_team['Total xG']:.2f} xG)",
+                    f"{top_attack_team['Total Gol']} Gol dicetak"
+                )
+            with tk3:
+                st.metric(
+                    "🛡️ Pertahanan Terkokoh",
+                    f"{top_defense_team['Klub']} ({top_defense_team['Clean Sheet']} CS)",
+                    f"{top_defense_team['Total Saves']} Saves"
+                )
+            with tk4:
+                st.metric(
+                    "🗓️ Jadwal Termudah (FDR3)",
+                    f"{easiest_fdr_team['Klub']} (FDR: {easiest_fdr_team['FDR3']:.2f})",
+                    f"Lawan: {easiest_fdr_team['Lawan Berikutnya']}"
+                )
+
+            # 2. Controls: Filter & Sort
+            st.markdown("##### 🔍 Filter & Urutkan Data Tim")
+            t_col1, t_col2, t_col3 = st.columns(3)
+            with t_col1:
+                team_search = st.text_input("Cari Nama Klub", "", placeholder="Misal: Arsenal, Liverpool...", key="team_search_input")
+            with t_col2:
+                tier_filter = st.selectbox(
+                    "Filter Kategori Kekuatan:",
+                    options=["Semua Kategori", "🏆 Elite Contender", "🌟 Top Tier Challenger", "⚖️ Mid-Table Stable", "⚠️ Underdogs / Rebuilding"],
+                    key="team_tier_filter"
+                )
+            with t_col3:
+                sort_col = st.selectbox(
+                    "Urutkan Berdasarkan:",
+                    options=[
+                        "Indeks Kekuatan", "Rata-rata Poin Pemain", "Total Poin Skuad",
+                        "Total Gol", "Total xG", "Clean Sheet", "Total xGC", "FDR3", "Kemudahan Jadwal (%)"
+                    ],
+                    index=0,
+                    key="team_sort_col"
+                )
+
+            filtered_teams = df_teams.copy()
+            if team_search:
+                filtered_teams = filtered_teams[filtered_teams['Klub'].str.contains(team_search, case=False, na=False)]
+            if tier_filter != "Semua Kategori":
+                filtered_teams = filtered_teams[filtered_teams['Kategori Tim'] == tier_filter]
+
+            is_asc = (sort_col in ["FDR3", "Total xGC"])
+            filtered_teams = filtered_teams.sort_values(by=sort_col, ascending=is_asc)
+
+            # 3. Comprehensive Sortable Table
+            st.markdown("##### 📋 Tabel Agregasi & Pemeringkatan Kekuatan Tim")
+            team_display_cols = [
+                'Klub', 'Indeks Kekuatan', 'Kategori Tim', 'Rata-rata Poin Pemain', 'Pemain Aktif', 'Total Poin Skuad',
+                'Total Gol', 'Total xG', 'Clean Sheet', 'Total xGC', 'Total Saves',
+                'Top Scorer', 'Top Creator', 'Top Aset FPL', 'Lawan Berikutnya', 'FDR1', 'FDR3', 'FDR5'
+            ]
+
+            st.dataframe(
+                filtered_teams[team_display_cols],
+                use_container_width=True,
+                height=520,
+                column_config={
+                    "Indeks Kekuatan": st.column_config.ProgressColumn(
+                        "Indeks Kekuatan",
+                        min_value=0,
+                        max_value=100,
+                        format="%.1f"
+                    ),
+                    "Rata-rata Poin Pemain": st.column_config.NumberColumn(
+                        "Rata-rata Poin (Menit > 0)",
+                        help="Rata-rata akumulasi poin FPL yang dihitung HANYA untuk pemain yang sudah bermain (Menit Bermain > 0).",
+                        format="%.2f pts"
+                    ),
+                    "Pemain Aktif": st.column_config.NumberColumn(
+                        "Pemain Aktif",
+                        help="Jumlah pemain skuad yang telah mencatatkan menit bermain di EPL musim ini.",
+                        format="%d"
+                    ),
+                    "Total Poin Skuad": st.column_config.NumberColumn(format="%d pts"),
+                    "Total Gol": st.column_config.NumberColumn(format="%d"),
+                    "Total xG": st.column_config.NumberColumn(format="%.2f"),
+                    "Clean Sheet": st.column_config.NumberColumn(format="%d"),
+                    "Total xGC": st.column_config.NumberColumn(format="%.2f"),
+                    "Total Saves": st.column_config.NumberColumn(format="%d"),
+                    "FDR1": st.column_config.NumberColumn(format="%.1f"),
+                    "FDR3": st.column_config.NumberColumn(format="%.2f"),
+                    "FDR5": st.column_config.NumberColumn(format="%.2f"),
+                }
+            )
+            st.caption("💡 *Catatan: Rata-rata Poin Pemain dihitung khusus untuk pemain yang sudah bermain di EPL (Menit Bermain > 0) agar tidak bias oleh pemain cadangan atau akademi tanpa menit bermain. Indeks Kekuatan menggabungkan 20% Metrik Serangan, 20% Soliditas Pertahanan, 15% Efisiensi Poin Pemain Aktif, 30% Kekuatan Resmi Premier League, dan 15% Kemudahan Jadwal FDR.*")
+
+            # 4. Visual Subtabs: Scatter Matrix, Bar Chart Comparison, Team Deep Dive
+            st.divider()
+            t_subtab1, t_subtab2, t_subtab3 = st.tabs([
+                "📊 Matriks Serangan vs Pertahanan",
+                "📈 Komparasi Bar Chart Kekuatan Tim & FDR",
+                "🔍 Deep-Dive Analisis Klub & Top Aset FPL"
+            ])
+
+            # SUBTAB 1: ATTACK VS DEFENSE SCATTER PLOT
+            with t_subtab1:
+                st.markdown("##### 📊 Matriks Kuadran: Daya Gedor Serangan (xG) vs Soliditas Pertahanan (Clean Sheets)")
+                st.write("Memetakan 20 klub Premier League ke dalam 4 kuadran performa untuk mengidentifikasi tim elit, tim menyerang rentan kebobolan, dan tim defensif.")
+
+                avg_xg = df_teams['Total xG'].mean()
+                avg_cs = df_teams['Clean Sheet'].mean()
+
+                fig_quad = px.scatter(
+                    df_teams,
+                    x='Total xG',
+                    y='Clean Sheet',
+                    size='Rata-rata Poin Pemain',
+                    color='Indeks Kekuatan',
+                    text='Kode',
+                    hover_name='Klub',
+                    hover_data={
+                        'Total Gol': True,
+                        'Total xG': ':.2f',
+                        'Clean Sheet': True,
+                        'Total Poin Skuad': True,
+                        'Rata-rata Poin Pemain': ':.2f',
+                        'FDR3': ':.2f',
+                        'Lawan Berikutnya': True,
+                        'Kode': False
+                    },
+                    color_continuous_scale='Plasma',
+                    title="Pemetaan Kuadran Tim: Serangan vs Pertahanan"
+                )
+
+                fig_quad.update_traces(
+                    textposition='top center',
+                    textfont=dict(size=11, family="Plus Jakarta Sans", color="#1e293b")
+                )
+
+                fig_quad.add_vline(x=avg_xg, line_width=1.5, line_dash="dash", line_color="#94a3b8")
+                fig_quad.add_hline(y=avg_cs, line_width=1.5, line_dash="dash", line_color="#94a3b8")
+
+                fig_quad.update_layout(
+                    paper_bgcolor="#ffffff",
+                    plot_bgcolor="#f8fafc",
+                    font=dict(family="Plus Jakarta Sans", size=12, color="#1e293b"),
+                    margin=dict(l=30, r=30, t=50, b=30),
+                    height=520,
+                    xaxis=dict(gridcolor="#e2e8f0", title="Daya Gedor Serangan (Total xG Tim)"),
+                    yaxis=dict(gridcolor="#e2e8f0", title="Soliditas Pertahanan (Total Clean Sheet Tim)")
+                )
+
+                st.plotly_chart(fig_quad, use_container_width=True)
+                st.caption(f"💡 *Garis putus-putus abu-abu adalah rata-rata liga (xG rata-rata: {avg_xg:.2f}, Clean Sheet rata-rata: {avg_cs:.1f}). Kuadran kanan-atas mencerminkan tim paling seimbang dan dominan.*")
+
+            # SUBTAB 2: BAR CHART COMPARISON
+            with t_subtab2:
+                st.markdown("##### 📈 Peringkat & Komparasi Antar Klub")
+                
+                c_col1, c_col2 = st.columns(2)
+                with c_col1:
+                    chart_metric_choice = st.selectbox(
+                        "Pilih Metrik untuk Perbandingan Bar Chart:",
+                        options=[
+                            "Indeks Kekuatan", "Rata-rata Poin Pemain", "Total Poin Skuad",
+                            "Total Gol", "Total xG", "Clean Sheet", "Nilai Skuad (£m)"
+                        ],
+                        index=0,
+                        key="team_bar_metric_sel"
+                    )
+                with c_col2:
+                    color_scale_choice = st.selectbox(
+                        "Pewarnaan Bar:",
+                        options=["Indeks Kekuatan", "FDR3 (Jadwal Mendatang)", "Total Poin Skuad"],
+                        index=0,
+                        key="team_bar_color_sel"
+                    )
+
+                df_sorted_bar = df_teams.sort_values(by=chart_metric_choice, ascending=False)
+
+                fig_team_bar = px.bar(
+                    df_sorted_bar,
+                    x='Klub',
+                    y=chart_metric_choice,
+                    color=color_scale_choice,
+                    color_continuous_scale='Turbo' if color_scale_choice == "FDR3 (Jadwal Mendatang)" else 'Viridis',
+                    title=f"Peringkat 20 Klub Premier League berdasarkan {chart_metric_choice}",
+                    hover_data=['Kode', 'Top Scorer', 'Top Aset FPL', 'FDR3', 'Lawan Berikutnya']
+                )
+
+                fig_team_bar.update_layout(
+                    paper_bgcolor="#ffffff",
+                    plot_bgcolor="#f8fafc",
+                    font=dict(family="Plus Jakarta Sans", color="#1e293b"),
+                    margin=dict(l=20, r=20, t=50, b=30),
+                    height=480,
+                    xaxis=dict(gridcolor="#e2e8f0", title="Klub Premier League"),
+                    yaxis=dict(gridcolor="#e2e8f0", title=chart_metric_choice)
+                )
+
+                st.plotly_chart(fig_team_bar, use_container_width=True)
+
+            # SUBTAB 3: TEAM DEEP-DIVE & ASSETS
+            with t_subtab3:
+                st.markdown("##### 🔍 Analisis Mendalam Klub & Rekomendasi Aset FPL")
+                
+                selected_team_name = st.selectbox(
+                    "Pilih Klub Premier League untuk Deep-Dive:",
+                    options=sorted(df_teams['Klub'].tolist()),
+                    key="deep_dive_team_sel"
+                )
+
+                team_matches = df_teams[df_teams['Klub'] == selected_team_name]
+                team_row = team_matches.iloc[0] if not team_matches.empty else df_teams.iloc[0]
+                t_id = team_row['team_id']
+
+                dd1, dd2, dd3, dd4 = st.columns(4)
+                with dd1:
+                    st.metric("Indeks Kekuatan", f"{team_row['Indeks Kekuatan']}", team_row['Kategori Tim'])
+                with dd2:
+                    st.metric("Skor Serangan", f"{team_row['Skor Serangan']} / 100", f"{team_row['Total Gol']} Gol ({team_row['Total xG']:.2f} xG)")
+                with dd3:
+                    st.metric("Skor Pertahanan", f"{team_row['Skor Pertahanan']} / 100", f"{team_row['Clean Sheet']} CS · {team_row['Total Saves']} Saves")
+                with dd4:
+                    st.metric("Jadwal FDR3", f"{team_row['FDR3']:.2f}", f"Lawan: {team_row['Lawan Berikutnya']}")
+
+                st.markdown(f"###### 🌟 Top 5 Aset FPL Utama di {selected_team_name}")
+                club_players = players_df[players_df['Klub'] == selected_team_name]
+                if not club_players.empty:
+                    top_club_assets = club_players.sort_values(by=['Total Poin', 'xPoin'], ascending=False).head(5)
+                    asset_cols = ['Nama Pemain', 'Posisi', 'Harga (£m)', 'Total Poin', 'xPoin', 'xG', 'xA', 'Form', 'Avg Mins (L5M)', 'Status']
+                    st.dataframe(
+                        top_club_assets[asset_cols],
+                        use_container_width=True,
+                        column_config={
+                            "Harga (£m)": st.column_config.NumberColumn(format="£%.1fm"),
+                            "Total Poin": st.column_config.NumberColumn(format="%d pts"),
+                            "xPoin": st.column_config.NumberColumn(format="%.2f pts"),
+                            "xG": st.column_config.NumberColumn(format="%.2f"),
+                            "xA": st.column_config.NumberColumn(format="%.2f"),
+                            "Form": st.column_config.NumberColumn(format="%.2f"),
+                            "Avg Mins (L5M)": st.column_config.NumberColumn(format="%.1f mins")
+                        }
+                    )
+                else:
+                    st.info("Data pemain untuk klub ini belum tersedia.")
+
+                st.markdown(f"###### 🗓️ Jadwal 5 Laga Mendatang ({selected_team_name})")
+                upcoming_fxs = []
+                for f in fixtures_data:
+                    if not f.get('finished'):
+                        h_id, a_id = f.get('team_h'), f.get('team_a')
+                        if h_id == t_id or a_id == t_id:
+                            is_home = (h_id == t_id)
+                            opp_id = a_id if is_home else h_id
+                            diff = f.get('team_h_difficulty', 3) if is_home else f.get('team_a_difficulty', 3)
+                            opp_name = teams_dict.get(opp_id, f"Team {opp_id}")
+                            diff_badge = {
+                                1: "🟢 Sangat Mudah (1)",
+                                2: "🟢 Mudah (2)",
+                                3: "⚪ Sedang (3)",
+                                4: "🔴 Sulit (4)",
+                                5: "🔴 Sangat Sulit (5)"
+                            }.get(diff, f"Rating {diff}")
+                            upcoming_fxs.append({
+                                'Gameweek': f"GW{f.get('event')}",
+                                'Lawan': opp_name,
+                                'Venue': "🏠 Home" if is_home else "✈️ Away",
+                                'Tingkat Kesulitan (FDR)': diff,
+                                'Status FDR': diff_badge,
+                                'Kickoff': f.get('kickoff_time', '-')[:10] if f.get('kickoff_time') else '-'
+                            })
+                            if len(upcoming_fxs) >= 5:
+                                break
+
+                if upcoming_fxs:
+                    df_up_fxs = pd.DataFrame(upcoming_fxs)
+                    st.dataframe(
+                        df_up_fxs,
+                        use_container_width=True,
+                        column_config={
+                            "Tingkat Kesulitan (FDR)": st.column_config.NumberColumn(format="%d")
+                        }
+                    )
+        else:
+            st.warning("Data analisis kekuatan tim tidak dapat dihitung.")
+
+    # -------------------------------------------------------------------------
+    # TAB 4: FIXTURES & FDR SUMMARY
+    # -------------------------------------------------------------------------
+    with tab4:
         st.subheader("📅 Jadwal Pertandingan & Rating Kesulitan (FDR)")
         st.write("Evaluasi tingkat kesulitan lawan untuk setiap tim pada pertandingan mendatang.")
 
@@ -1670,9 +3377,9 @@ def main():
         st.caption("💡 *Catatan FDR: Skala 1 (Sangat Mudah) hingga 5 (Sangat Sulit). Nilai FDR3 dan FDR5 yang lebih rendah menandakan jadwal pertandingan mendatang yang lebih menguntungkan.*")
 
     # -------------------------------------------------------------------------
-    # TAB 4: OPTION B: COMPONENT MODEL XPOIN
+    # TAB 5: OPTION B: COMPONENT MODEL XPOIN
     # -------------------------------------------------------------------------
-    with tab4:
+    with tab5:
         st.subheader("🧮 Option B: Bottom-Up Component Model xPoin")
         st.write("Model perhitungan xPoin berdasarkan breakdown komponen individual: estimasi menit, xG/xA match regresi, kontribusi defensif, clean sheet, saves, dan bonus points.")
 
@@ -1752,6 +3459,69 @@ def main():
             }
         )
         st.caption("💡 *Bottom-Up Component Model (Option B) menghitung xPoin dari akumulasi individual komponen: xMins, xG, xA, xSaves, xDC (Poisson CDF), xCS, dan xBP.*")
+
+
+    
+    # -------------------------------------------------------------------------
+    # TAB 6: OPTION C: CURRENT SEASON MODEL
+    # -------------------------------------------------------------------------
+    with tab6:
+        st.subheader("🔮 Option C: Current Season (On-the-Fly Model)")
+        st.write("Model regresi prediktif yang 100% dilatih menggunakan data API musim berjalan (tabel history). Model otomatis diremodel/update setiap 5 Gameweek (GW5, GW10, dst).")
+        
+        with st.spinner("Mengekstrak dan melatih model Option C dari histori API musim ini..."):
+            try:
+                df_train_c, df_view_c, models_c = build_option_c_model_and_view(fpl_data, fdr_summary, current_gw)
+            except Exception as e:
+                st.error(f"Error Opt C: {e}")
+                df_train_c, df_view_c, models_c = None, None, None
+            
+        if df_view_c is not None and not df_view_c.empty:
+            st.success("✅ Model Option C berhasil diremodel menggunakan data histori terbaru.")
+            
+            # Show Models details
+            with st.expander("🤖 Detail 4 Model Regresi Option C", expanded=False):
+                ct1, ct2, ct3, ct4 = st.tabs(["⚽ FWD", "🎯 MID", "🛡️ DEF", "🧤 GK"])
+                tabs_m = [(ct1, 'FWD'), (ct2, 'MID'), (ct3, 'DEF'), (ct4, 'GK')]
+                
+                for tab_obj, pos_key in tabs_m:
+                    with tab_obj:
+                        if pos_key in models_c:
+                            m = models_c[pos_key]
+                            st.write(f"**Fitur (Variabel Bebas) Posisi {pos_key}:**")
+                            st.write(", ".join(m['features']))
+                            coefs = m['model'].coef_
+                            coef_df = pd.DataFrame({'Fitur': m['features'], 'Bobot (β)': coefs})
+                            st.dataframe(coef_df, use_container_width=True)
+                        else:
+                            st.warning(f"Data latih untuk {pos_key} tidak cukup.")
+                            
+            # Show summary table
+            st.markdown("##### 📋 Tabel Rangkuman Prediksi xPoin GW Selanjutnya (Option C)")
+            
+            # Filter search
+            if search_query:
+                df_view_c = df_view_c[df_view_c['Nama Pemain'].str.contains(search_query, case=False, na=False)]
+                
+            st.dataframe(
+                df_view_c,
+                use_container_width=True,
+                height=560,
+                column_config={
+                    "xPoin (Option C)": st.column_config.NumberColumn(format="%.2f pts"),
+                    "Total xG": st.column_config.NumberColumn(format="%.2f"),
+                    "Total xA": st.column_config.NumberColumn(format="%.2f"),
+                    "Avg Mins (L5M)": st.column_config.NumberColumn(format="%.1f mins"),
+                    "FDR1": st.column_config.NumberColumn(format="%.1f"),
+                    "FDR3": st.column_config.NumberColumn(format="%.2f"),
+                    "FDR5": st.column_config.NumberColumn(format="%.2f")
+                }
+            )
+            
+            st.caption("💡 *Tabel rangkuman prediksi ini digunakan untuk mengambil keputusan pemain yang akan dipakai pada Gameweek selanjutnya. Menggunakan data murni musim berjalan.*")
+        else:
+            st.warning("Belum ada data history musim berjalan yang cukup untuk melatih model Option C.")
+
 
 if __name__ == "__main__":
     main()
