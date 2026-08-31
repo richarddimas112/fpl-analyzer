@@ -50,7 +50,9 @@ def calculate_team_fdrs(fixtures, teams_dict):
     team_upcoming = {t_id: [] for t_id in teams_dict.keys()}
     
     for f in fixtures:
-        if not f.get('finished'):
+        # Hanya hitung pertandingan mendatang yang benar-benar belum berjalan (belum selesai, belum kickoff)
+        is_already_played = bool(f.get('finished') or f.get('finished_provisional') or f.get('started'))
+        if not is_already_played:
             h_id = f.get('team_h')
             a_id = f.get('team_a')
             h_diff = f.get('team_h_difficulty', 3)
