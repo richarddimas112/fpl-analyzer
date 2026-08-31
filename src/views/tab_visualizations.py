@@ -27,8 +27,10 @@ def render_tab_visualizations(filtered_players, players_df, fpl_data, teams_dict
 
         num_cols = [
             'xPoin', 'Total Poin', 'Harga (£m)', 'xG', 'xA', 'xGI',
-            'Form', 'BPS', '% Ownership', 'ICT Index', 'xG per 90', 'xA per 90',
-            'FDR1', 'FDR3', 'FDR5', 'Menit Bermain', 'Gol', 'Asis'
+            'Influence', 'Creativity', 'Threat', 'ICT Index',
+            'Tackles', 'Defensive Contribution', 'Defensive Contribution per 90',
+            'Form', 'BPS', '% Ownership', 'xG per 90', 'xA per 90',
+            'FDR1', 'FDR3', 'FDR5', 'Menit Bermain', 'Gol', 'Asis', 'Clean Sheet', 'Saves'
         ]
 
         p_col1, p_col2, p_col3 = st.columns(3)
@@ -111,7 +113,12 @@ def render_tab_visualizations(filtered_players, players_df, fpl_data, teams_dict
         with b_col1:
             bar_metric = st.selectbox(
                 "Pilih Metrik Klub:",
-                options=['Total Poin', 'xPoin', 'xG', 'xA', 'Form', 'Harga (£m)', 'Gol', 'Asis', 'BPS', 'Clean Sheet'],
+                options=[
+                    'Total Poin', 'xPoin', 'xG', 'xA', 
+                    'Influence', 'Creativity', 'Threat', 'ICT Index',
+                    'Tackles', 'Defensive Contribution', 'Clean Sheet', 'Saves',
+                    'Form', 'Harga (£m)', 'Gol', 'Asis', 'BPS'
+                ],
                 index=0,
                 key="bar_metric"
             )
