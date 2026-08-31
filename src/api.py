@@ -40,13 +40,19 @@ def fetch_fixtures_data():
         return []
 
 def fetch_player_history_raw(player_id):
-    """Mengambil histori match-by-match individual pemain tanpa cache."""
+    """Mengambil histori match-by-match individual pemain tanpa cache, menyaring fixture yang belum berlangsung."""
     try:
         session = get_http_session()
         url = ELEMENT_SUMMARY_URL.format(player_id)
         response = session.get(url, timeout=8)
         if response.status_code == 200:
-            return response.json().get('history', [])
+            raw_hist = response.json().get('history', [])
+            # Hanya sertakan pertandingan yang sudah dimulai/selesai (skor bukan None atau ada menit bermain yang tercatat)
+            valid_hist = [
+                m for m in raw_hist 
+                if (m.get('team_h_score') is not None and m.get('team_a_score') is not None) or int(m.get('minutes', 0)) > 0
+            ]
+            return valid_hist
         return []
     except Exception:
         return []
@@ -64,7 +70,13 @@ def fetch_player_element_summary(player_id):
         url = ELEMENT_SUMMARY_URL.format(player_id)
         response = session.get(url, timeout=10)
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            raw_hist = data.get('history', [])
+            data['history'] = [
+                m for m in raw_hist 
+                if (m.get('team_h_score') is not None and m.get('team_a_score') is not None) or int(m.get('minutes', 0)) > 0
+            ]
+            return data
         return {}
     except Exception as e:
         return {}
