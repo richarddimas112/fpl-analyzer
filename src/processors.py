@@ -268,13 +268,18 @@ def compute_all_l5m_avg_mins(elements):
     def get_l5m_for_player(el):
         p_id = el['id']
         hist = fetch_player_history_raw(p_id)
-        if hist:
-            sorted_hist = sorted(hist, key=lambda m: m.get('round', m.get('event', 0)))
+        # Filter pertandingan yang sudah valid berjalan/selesai
+        valid_hist = [
+            m for m in hist 
+            if (m.get('team_h_score') is not None and m.get('team_a_score') is not None) or int(m.get('minutes', 0)) > 0
+        ]
+        if valid_hist:
+            sorted_hist = sorted(valid_hist, key=lambda m: m.get('round', m.get('event', 0)))
             last_5 = sorted_hist[-5:]
             avg_m = sum(int(x.get('minutes', 0)) for x in last_5) / float(len(last_5))
             return p_id, round(avg_m, 1)
         else:
-            fallback = min(90.0, float(el.get('minutes', 0)) / 5.0)
+            fallback = min(90.0, float(el.get('minutes', 0)))
             return p_id, round(fallback, 1)
 
     l5m_map = {}
