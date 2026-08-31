@@ -342,8 +342,9 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         saves = int(el.get('saves', 0))
         form = float(el.get('form', 0.0) or 0.0)
         ict = float(el.get('ict_index', 0.0) or 0.0)
-        threat = float(el.get('threat', 0.0) or 0.0)
+        influence = float(el.get('influence', 0.0) or 0.0)
         creativity = float(el.get('creativity', 0.0) or 0.0)
+        threat = float(el.get('threat', 0.0) or 0.0)
         bps = int(el.get('bps', 0))
         bonus = int(el.get('bonus', 0))
         goals = int(el.get('goals_scored', 0))
@@ -361,6 +362,7 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             saves90 = (saves / mins) * 90.0
             bps90 = (bps / mins) * 90.0
             ict90 = (ict / mins) * 90.0
+            influence90 = (influence / mins) * 90.0
             threat90 = (threat / mins) * 90.0
             creativity90 = (creativity / mins) * 90.0
         else:
@@ -371,6 +373,7 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             saves90 = float(el.get('saves_per_90', 0.0) or 0.0)
             bps90 = 0.0
             ict90 = 0.0
+            influence90 = float(el.get('influence_rank_type', 0.0) or 0.0) / 10.0 if el.get('influence_rank_type') else 0.0
             threat90 = float(el.get('threat_rank_type', 0.0) or 0.0) / 10.0 if el.get('threat_rank_type') else 0.0
             creativity90 = float(el.get('creativity_rank_type', 0.0) or 0.0) / 10.0 if el.get('creativity_rank_type') else 0.0
 
@@ -378,8 +381,12 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         interceptions = float(el.get('interceptions', 0) or 0)
         clearances = float(el.get('clearances_blocks_interceptions', el.get('clearances', 0)) or 0)
         recoveries = float(el.get('recoveries', 0) or 0)
-        tot_def_actions = tackles + interceptions + clearances + recoveries
+        raw_def_contrib = float(el.get('defensive_contribution', 0) or 0)
+        tot_def_actions = (tackles + interceptions + clearances + recoveries) if (tackles + interceptions + clearances + recoveries) > 0 else raw_def_contrib
         def_contrib_90 = (tot_def_actions / mins * 90.0) if mins > 0 else float(el.get('defensive_contribution_per_90', 0.0) or 0.0)
+        tackles_90 = (tackles / mins * 90.0) if mins > 0 else 0.0
+        recoveries_90 = (recoveries / mins * 90.0) if mins > 0 else 0.0
+        clearances_90 = (clearances / mins * 90.0) if mins > 0 else 0.0
 
         # L5M Average Minutes
         avg_mins_l5m = l5m_map.get(el['id'], 0.0)
@@ -450,7 +457,17 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             'Defensive Contribution per 90': round(def_contrib_90, 2),
             'threat_per_90': round(threat90, 2),
             'creativity_per_90': round(creativity90, 2),
+            'influence_per_90': round(influence90, 2),
             'ICT Index': ict,
+            'Influence': influence,
+            'Creativity': creativity,
+            'Threat': threat,
+            'Tackles': int(tackles),
+            'Tackles per 90': round(tackles_90, 2),
+            'Interceptions': int(interceptions),
+            'Clearances': int(clearances),
+            'Recoveries': int(recoveries),
+            'Defensive Contribution': round(tot_def_actions, 1),
             'BPS': bps,
             'Bonus Poin': bonus,
             'Kartu Kuning': int(el.get('yellow_cards', 0)),
@@ -653,12 +670,17 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         'Nama Pemain', 'Klub', 'Lawan GW Berikutnya', 'Posisi', 'Harga (£m)', 'xPoin', 'xPoin (Option B)',
         'xG Pred (Match)', 'xA Pred (Match)', 'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
         'Avg Mins (L5M)', 'Total Poin', 'FDR1', 'FDR3', 'FDR5', 'Form', '% Ownership', 'Net Transfers GW',
+        'Transfers In GW', 'Transfers Out GW',
         'xG', 'xA', 'xGI', 'xG per 90', 'xA per 90', 'xGI per 90',
         'xGC per 90', 'Saves per 90', 'Defensive Contribution per 90',
-        'ICT Index', 'BPS', 'Bonus Poin', 'Kartu Kuning', 'Kartu Merah', 'Saves',
+        'ICT Index', 'Influence', 'Creativity', 'Threat',
+        'influence_per_90', 'creativity_per_90', 'threat_per_90',
+        'Tackles', 'Tackles per 90', 'Clearances', 'Recoveries', 'Interceptions',
+        'Defensive Contribution',
+        'BPS', 'Bonus Poin', 'Kartu Kuning', 'Kartu Merah', 'Saves',
         'Penalti Order', 'Free Kick Order', 'Corner Order', 'Status',
         'Peluang Main GW (%)', 'Berita Cedera', 'Menit Bermain', 'Gol', 'Asis',
-        'Clean Sheet', 'Nama Lengkap'
+        'Clean Sheet', 'Nama Lengkap', 'Poin per £m', 'xPoin per £m', 'Kemudahan Jadwal'
     ]
     
     return df[cols], team_dict
