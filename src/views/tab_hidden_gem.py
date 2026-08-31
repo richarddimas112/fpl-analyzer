@@ -15,9 +15,10 @@ from src.models_hidden_gem import (
     render_seaborn_underperformance_plot
 )
 
-def render_tab_hidden_gem(fpl_data, fdr_summary, current_gw):
+def render_tab_hidden_gem(fpl_data, fdr_summary, current_gw, filtered_player_ids=None, teams_dict=None):
     """
     Renders Tab 7: Hidden Gem Detector & XGBoost Haul (>10 Pts) Predictor.
+    Integrates with global sidebar filters ('Filter Pemain FPL') to eliminate filter redundancy.
     """
     st.subheader("💎 Hidden Gem Detector & Prediksi Haul (>10 Poin) dengan XGBoost")
     st.write(
@@ -34,11 +35,18 @@ def render_tab_hidden_gem(fpl_data, fdr_summary, current_gw):
         st.warning("Data pemain belum mencukupi untuk menjalankan analisis Hidden Gem.")
         return
 
+    # Filter df_pred using global sidebar filters if available
+    if filtered_player_ids is not None:
+        # Keep global filtered players
+        df_display_pool = df_pred[df_pred['id'].isin(filtered_player_ids)].copy()
+    else:
+        df_display_pool = df_pred.copy()
+
     # --- KPI SUMMARY CARDS ---
-    top_gem = df_pred[df_pred['% Ownership'] <= 12.0].sort_values(by='Probability of Haul (%)', ascending=False).iloc[0] if not df_pred[df_pred['% Ownership'] <= 12.0].empty else df_pred.iloc[0]
-    top_unlucky = df_pred.sort_values(by='underperformance_index', ascending=False).iloc[0]
-    top_ceiling = df_pred.sort_values(by='max_points', ascending=False).iloc[0]
-    highest_haul_prob = df_pred.iloc[0]
+    top_gem = df_display_pool[df_display_pool['% Ownership'] <= 12.0].sort_values(by='Probability of Haul (%)', ascending=False).iloc[0] if not df_display_pool[df_display_pool['% Ownership'] <= 12.0].empty else (df_display_pool.iloc[0] if not df_display_pool.empty else df_pred.iloc[0])
+    top_unlucky = df_display_pool.sort_values(by='underperformance_index', ascending=False).iloc[0] if not df_display_pool.empty else df_pred.iloc[0]
+    top_ceiling = df_display_pool.sort_values(by='max_points', ascending=False).iloc[0] if not df_display_pool.empty else df_pred.iloc[0]
+    highest_haul_prob = df_display_pool.iloc[0] if not df_display_pool.empty else df_pred.iloc[0]
 
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     with kpi1:
@@ -158,56 +166,37 @@ def render_tab_hidden_gem(fpl_data, fdr_summary, current_gw):
 
     # --- SECTION 3: TABEL KLASIFIKASI PROBABILITAS HAUL LENGKAP ---
     st.markdown("### 3. 🎯 Tabel Klasifikasi Probabilitas Haul GW Mendatang (Diurutkan Tertinggi)")
+    st.caption("ℹ️ *Tabel ini otomatis tersinkronisasi dengan kontrol filter global di Sidebar (Klub, Posisi, Rentang Kepemilikan/Ownership, Harga, Menit Bermain, & Pencarian Nama Pemain).*")
     
-    # Filter Interaktif
-    f_col1, f_col2, f_col3, f_col4 = st.columns(4)
+    # Filter Spesifik Tab (Hanya Kategori Gem & Minimal Probabilitas Haul untuk menghindari redundansi)
+    f_col1, f_col2 = st.columns([2, 1])
+    
+    all_categories = sorted(df_pred['Kategori Gem'].dropna().unique().tolist())
+
     with f_col1:
-        filter_pos = st.multiselect(
-            "Filter Posisi:",
-            options=['FWD', 'MID', 'DEF', 'GKP'],
-            default=['FWD', 'MID', 'DEF', 'GKP'],
-            key="hg_filter_pos"
+        filter_categories = st.multiselect(
+            "Filter Kategori Gem:",
+            options=all_categories,
+            default=all_categories,
+            key="hg_filter_categories",
+            help="Pilih klasifikasi aset spesifik (misal: Ultimate Hidden Gem, Elite Captaincy, Bom Waktu, dll)"
         )
     with f_col2:
-        max_ownership = st.slider(
-            "Maksimal % Kepemilikan (Ownership):",
-            min_value=1.0,
-            max_value=100.0,
-            value=100.0,
-            step=1.0,
-            key="hg_max_own",
-            help="Gunakan nilai ≤10% atau ≤15% untuk menyaring aset Differential murni."
-        )
-    with f_col3:
         min_prob = st.slider(
             "Minimal Probability of Haul (%):",
             min_value=0.0,
             max_value=60.0,
             value=10.0,
             step=2.0,
-            key="hg_min_prob"
-        )
-    with f_col4:
-        category_filter = st.selectbox(
-            "Kategori Khusus:",
-            options=[
-                "Semua Pemain",
-                "Hanya Hidden Gem & Differential (≤15% Own)",
-                "Hanya Bom Waktu (Underperformance Index > 0.3)"
-            ],
-            key="hg_cat_filter"
+            key="hg_min_prob",
+            help="Tampilkan hanya pemain dengan probabilitas haul di atas batas ini"
         )
 
-    display_df = df_pred[
-        (df_pred['Posisi'].isin(filter_pos)) &
-        (df_pred['% Ownership'] <= max_ownership) &
-        (df_pred['Probability of Haul (%)'] >= min_prob)
+    # Filter dari pool yang sudah disaring oleh Sidebar Global Filters
+    display_df = df_display_pool[
+        (df_display_pool['Kategori Gem'].isin(filter_categories if filter_categories else all_categories)) &
+        (df_display_pool['Probability of Haul (%)'] >= min_prob)
     ].copy()
-
-    if category_filter == "Hanya Hidden Gem & Differential (≤15% Own)":
-        display_df = display_df[display_df['% Ownership'] <= 15.0]
-    elif category_filter == "Hanya Bom Waktu (Underperformance Index > 0.3)":
-        display_df = display_df[display_df['underperformance_index'] > 0.3]
 
     table_cols = [
         'Nama Pemain', 'Klub', 'Posisi', 'Harga (£m)', '% Ownership',
