@@ -176,6 +176,16 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
             "xA per 90": st.column_config.NumberColumn(format="%.2f"),
             "xGI per 90": st.column_config.NumberColumn(format="%.2f"),
             "ICT Index": st.column_config.NumberColumn(format="%.1f"),
+            "Influence": st.column_config.NumberColumn(format="%.1f"),
+            "Creativity": st.column_config.NumberColumn(format="%.1f"),
+            "Threat": st.column_config.NumberColumn(format="%.1f"),
+            "Tackles": st.column_config.NumberColumn(format="%d"),
+            "Tackles per 90": st.column_config.NumberColumn(format="%.2f"),
+            "Clearances": st.column_config.NumberColumn(format="%d"),
+            "Recoveries": st.column_config.NumberColumn(format="%d"),
+            "Interceptions": st.column_config.NumberColumn(format="%d"),
+            "Defensive Contribution": st.column_config.NumberColumn(format="%.1f"),
+            "Defensive Contribution per 90": st.column_config.NumberColumn(format="%.2f"),
             "BPS": st.column_config.NumberColumn(format="%d"),
             "Bonus Poin": st.column_config.NumberColumn(format="%d"),
             "Kartu Kuning": st.column_config.NumberColumn(format="%d"),
@@ -309,6 +319,14 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
                     'xA': round(float(h.get('expected_assists', 0.0)), 2),
                     'xGI': round(float(h.get('expected_goal_involvements', 0.0)), 2),
                     'xGC': round(float(h.get('expected_goals_conceded', 0.0)), 2),
+                    'Influence': round(float(h.get('influence', 0.0)), 1),
+                    'Creativity': round(float(h.get('creativity', 0.0)), 1),
+                    'Threat': round(float(h.get('threat', 0.0)), 1),
+                    'ICT Index': round(float(h.get('ict_index', 0.0)), 1),
+                    'Tackles': int(h.get('tackles', 0) or 0),
+                    'Clearances': int(h.get('clearances_blocks_interceptions', 0) or 0),
+                    'Recoveries': int(h.get('recoveries', 0) or 0),
+                    'Defensive Contribution': round(float(h.get('defensive_contribution', (int(h.get('tackles', 0) or 0) + int(h.get('clearances_blocks_interceptions', 0) or 0) + int(h.get('recoveries', 0) or 0)))), 1),
                     'Menit Bermain': int(h.get('minutes', 0)),
                     'BPS': int(h.get('bps', 0)),
                     'Bonus Poin': int(h.get('bonus', 0)),
@@ -326,11 +344,22 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
             df_phist['Kumulatif xG'] = df_phist['xG'].cumsum().round(2)
             df_phist['Kumulatif xA'] = df_phist['xA'].cumsum().round(2)
             df_phist['Kumulatif xGI'] = df_phist['xGI'].cumsum().round(2)
+            df_phist['Kumulatif Influence'] = df_phist['Influence'].cumsum().round(1)
+            df_phist['Kumulatif Creativity'] = df_phist['Creativity'].cumsum().round(1)
+            df_phist['Kumulatif Threat'] = df_phist['Threat'].cumsum().round(1)
+            df_phist['Kumulatif ICT Index'] = df_phist['ICT Index'].cumsum().round(1)
+            df_phist['Kumulatif Tackles'] = df_phist['Tackles'].cumsum()
+            df_phist['Kumulatif Defensive Contribution'] = df_phist['Defensive Contribution'].cumsum().round(1)
             df_phist['Kumulatif Menit Bermain'] = df_phist['Menit Bermain'].cumsum()
 
             # Metric multiselect
-            available_metrics = ['Total Poin', 'xG', 'xA', 'Gol', 'Asis', 'xGI', 'Menit Bermain', 'BPS', 'Bonus Poin']
-            default_metrics = ['Total Poin', 'xG', 'xA', 'Gol', 'Asis']
+            available_metrics = [
+                'Total Poin', 'xG', 'xA', 'Gol', 'Asis', 'xGI', 
+                'Influence', 'Creativity', 'Threat', 'ICT Index',
+                'Tackles', 'Clearances', 'Recoveries', 'Defensive Contribution',
+                'Menit Bermain', 'BPS', 'Bonus Poin', 'Clean Sheet', 'Saves'
+            ]
+            default_metrics = ['Total Poin', 'xG', 'xA', 'Influence', 'Creativity', 'Threat']
             
             m_col1, m_col2 = st.columns([3, 1])
             with m_col1:
@@ -389,7 +418,7 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
                     xaxis=dict(gridcolor="#e2e8f0", title="Gameweek & Pertandingan", tickangle=-45),
                     yaxis=dict(title="Poin / Menit / BPS", gridcolor="#e2e8f0"),
                     yaxis2=dict(
-                        title="xG / xA / Gol / Asis",
+                        title="xG / xA / Stats Lanjutan",
                         overlaying='y',
                         side='right',
                         showgrid=False
@@ -415,6 +444,7 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
                 st.dataframe(
                     df_phist[[
                         'Gameweek', 'Lawan', 'Total Poin', 'Gol', 'Asis', 'xG', 'xA', 'xGI',
+                        'Influence', 'Creativity', 'Threat', 'ICT Index', 'Tackles', 'Defensive Contribution',
                         'Menit Bermain', 'BPS', 'Bonus Poin', 'Clean Sheet', 'Saves', 'Harga (£m)'
                     ]],
                     use_container_width=True,
