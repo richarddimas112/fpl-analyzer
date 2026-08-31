@@ -455,7 +455,8 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
             club_fixtures_list = []
             if raw_fixtures and t_id is not None:
                 for fx in raw_fixtures:
-                    if not fx.get('finished'):
+                    is_played = bool(fx.get('finished') or fx.get('finished_provisional') or fx.get('started'))
+                    if not is_played:
                         h_id = fx.get('team_h')
                         a_id = fx.get('team_a')
                         if h_id == t_id or a_id == t_id:
