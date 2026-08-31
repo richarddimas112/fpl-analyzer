@@ -1642,43 +1642,66 @@ def render_player_comparison_radar_tab(players_df, fpl_data, teams_dict):
 
     # 1. Rekomendasi Duel Real-Time (Dihitung Dinamis dari Pemain yang Aktif Bermain di EPL)
     realtime_matchups = []
+    seen_pairs = set()
     
     # a. Top 2 Total Poin Keseluruhan
     if len(active_sorted) >= 2:
         r1, r2 = active_sorted.iloc[0], active_sorted.iloc[1]
-        realtime_matchups.append((f"👑 {r1['Nama Pemain']} vs {r2['Nama Pemain']} (Top Poin Liga)", r1['Nama Pemain'], r2['Nama Pemain']))
+        pair_key = tuple(sorted([r1['Nama Pemain'], r2['Nama Pemain']]))
+        seen_pairs.add(pair_key)
+        realtime_matchups.append(("overall", f"👑 {r1['Nama Pemain']} vs {r2['Nama Pemain']} (Top Poin Liga)", r1['Nama Pemain'], r2['Nama Pemain']))
         
     # b. Top 2 Gelandang Aktif (MID)
     mids_act = active_pool[active_pool['Posisi'] == 'MID'].sort_values(by=['Total Poin', 'xPoin'], ascending=False)
     if len(mids_act) >= 2:
         m1, m2 = mids_act.iloc[0], mids_act.iloc[1]
-        realtime_matchups.append((f"⚡ {m1['Nama Pemain']} vs {m2['Nama Pemain']} (Top MID)", m1['Nama Pemain'], m2['Nama Pemain']))
+        pair_key = tuple(sorted([m1['Nama Pemain'], m2['Nama Pemain']]))
+        if pair_key in seen_pairs and len(mids_act) >= 3:
+            m2 = mids_act.iloc[2]
+            pair_key = tuple(sorted([m1['Nama Pemain'], m2['Nama Pemain']]))
+        seen_pairs.add(pair_key)
+        realtime_matchups.append(("mid", f"⚡ {m1['Nama Pemain']} vs {m2['Nama Pemain']} (Top MID)", m1['Nama Pemain'], m2['Nama Pemain']))
 
     # c. Top 2 Penyerang Aktif (FWD)
     fwds_act = active_pool[active_pool['Posisi'] == 'FWD'].sort_values(by=['Total Poin', 'xPoin'], ascending=False)
     if len(fwds_act) >= 2:
         f1, f2 = fwds_act.iloc[0], fwds_act.iloc[1]
-        realtime_matchups.append((f"🎯 {f1['Nama Pemain']} vs {f2['Nama Pemain']} (Top FWD)", f1['Nama Pemain'], f2['Nama Pemain']))
+        pair_key = tuple(sorted([f1['Nama Pemain'], f2['Nama Pemain']]))
+        if pair_key in seen_pairs and len(fwds_act) >= 3:
+            f2 = fwds_act.iloc[2]
+            pair_key = tuple(sorted([f1['Nama Pemain'], f2['Nama Pemain']]))
+        seen_pairs.add(pair_key)
+        realtime_matchups.append(("fwd", f"🎯 {f1['Nama Pemain']} vs {f2['Nama Pemain']} (Top FWD)", f1['Nama Pemain'], f2['Nama Pemain']))
 
     # d. Top 2 Bek Aktif (DEF)
     defs_act = active_pool[active_pool['Posisi'] == 'DEF'].sort_values(by=['Total Poin', 'xPoin'], ascending=False)
     if len(defs_act) >= 2:
         d1, d2 = defs_act.iloc[0], defs_act.iloc[1]
-        realtime_matchups.append((f"🛡️ {d1['Nama Pemain']} vs {d2['Nama Pemain']} (Top DEF)", d1['Nama Pemain'], d2['Nama Pemain']))
+        pair_key = tuple(sorted([d1['Nama Pemain'], d2['Nama Pemain']]))
+        if pair_key in seen_pairs and len(defs_act) >= 3:
+            d2 = defs_act.iloc[2]
+            pair_key = tuple(sorted([d1['Nama Pemain'], d2['Nama Pemain']]))
+        seen_pairs.add(pair_key)
+        realtime_matchups.append(("def", f"🛡️ {d1['Nama Pemain']} vs {d2['Nama Pemain']} (Top DEF)", d1['Nama Pemain'], d2['Nama Pemain']))
 
     # e. Top 2 Kiper Aktif (GK)
     gks_act = active_pool[active_pool['Posisi'] == 'GK'].sort_values(by=['Total Poin', 'xPoin'], ascending=False)
     if len(gks_act) >= 2:
         g1, g2 = gks_act.iloc[0], gks_act.iloc[1]
-        realtime_matchups.append((f"🧤 {g1['Nama Pemain']} vs {g2['Nama Pemain']} (Top GK)", g1['Nama Pemain'], g2['Nama Pemain']))
+        pair_key = tuple(sorted([g1['Nama Pemain'], g2['Nama Pemain']]))
+        if pair_key in seen_pairs and len(gks_act) >= 3:
+            g2 = gks_act.iloc[2]
+            pair_key = tuple(sorted([g1['Nama Pemain'], g2['Nama Pemain']]))
+        seen_pairs.add(pair_key)
+        realtime_matchups.append(("gk", f"🧤 {g1['Nama Pemain']} vs {g2['Nama Pemain']} (Top GK)", g1['Nama Pemain'], g2['Nama Pemain']))
 
     with st.expander("⚡ Rekomendasi Duel Real-Time (Top Performer Aktif EPL)", expanded=True):
         st.caption("Pintasan duel di bawah ini dihitung otomatis secara *real-time* dari pemain Premier League yang sedang aktif bermain musim ini (Menit Bermain > 0).")
         if realtime_matchups:
             rt_cols = st.columns(len(realtime_matchups))
-            for col, (btn_lbl, target1, target2) in zip(rt_cols, realtime_matchups):
+            for idx, (col, (tag, btn_lbl, target1, target2)) in enumerate(zip(rt_cols, realtime_matchups)):
                 with col:
-                    if st.button(btn_lbl, use_container_width=True, key=f"rt_btn_{target1}_{target2}"):
+                    if st.button(btn_lbl, use_container_width=True, key=f"rt_btn_{idx}_{tag}_{target1}_{target2}"):
                         st.session_state['comp_p1'] = target1
                         st.session_state['comp_p2'] = target2
                         st.rerun()
