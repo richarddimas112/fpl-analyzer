@@ -5,3 +5,6 @@ plotly
 statsmodels
 scipy
 scikit-learn
+requests
+matplotlib
+seaborn
