@@ -444,18 +444,23 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
 
             # Upcoming Fixtures for this player
             if p_fixtures:
-                with st.expander(f"🗓️ Jadwal Pertandingan Mendatang ({sel_pname})", expanded=False):
-                    fix_rows = []
-                    for fx in p_fixtures[:5]:
-                        is_h = fx.get('is_home')
-                        opp_team_id = fx.get('team_a') if is_h else fx.get('team_h')
-                        opp_team_name = teams_dict.get(opp_team_id, f"Team {opp_team_id}")
-                        fix_rows.append({
-                            'Gameweek': f"GW{fx.get('event')}",
-                            'Lawan': f"{opp_team_name} ({'Kandang (H)' if is_h else 'Tandang (A)'})",
-                            'Tingkat Kesulitan (FDR)': fx.get('difficulty', 3),
-                            'Kickoff': fx.get('kickoff_time', '')[:10] if fx.get('kickoff_time') else '-'
-                        })
-                    st.dataframe(pd.DataFrame(fix_rows), use_container_width=True, hide_index=True)
+                unplayed_p_fixtures = [
+                    fx for fx in p_fixtures 
+                    if not fx.get('finished') and not fx.get('finished_provisional') and not fx.get('started')
+                ]
+                if unplayed_p_fixtures:
+                    with st.expander(f"🗓️ Jadwal Pertandingan Mendatang ({sel_pname})", expanded=False):
+                        fix_rows = []
+                        for fx in unplayed_p_fixtures[:5]:
+                            is_h = fx.get('is_home')
+                            opp_team_id = fx.get('team_a') if is_h else fx.get('team_h')
+                            opp_team_name = teams_dict.get(opp_team_id, f"Team {opp_team_id}")
+                            fix_rows.append({
+                                'Gameweek': f"GW{fx.get('event')}",
+                                'Lawan': f"{opp_team_name} ({'Kandang (H)' if is_h else 'Tandang (A)'})",
+                                'Tingkat Kesulitan (FDR)': fx.get('difficulty', 3),
+                                'Kickoff': fx.get('kickoff_time', '')[:10] if fx.get('kickoff_time') else '-'
+                            })
+                        st.dataframe(pd.DataFrame(fix_rows), use_container_width=True, hide_index=True)
         else:
             st.info(f"Pemain {sel_pname} belum memiliki riwayat pertandingan yang tercatat di musim berjalan ini.")
