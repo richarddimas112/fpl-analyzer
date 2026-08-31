@@ -192,10 +192,11 @@ def render_player_comparison_radar_tab(df, fpl_data, teams_dict):
         radar_preset = st.selectbox(
             "Pilih Preset Metrik Radar:",
             options=[
-                "🎯 Ofensif & Daya Serang (xG, xA, xGI/90, Gol, Asis, ICT, xPoin, Form)",
-                "⭐ Profil Komprehensif FPL (Total Poin, xPoin, Form, Avg Mins L5M, BPS, xGI/90, ICT, Poin/£m)",
-                "💰 Efisiensi Biaya / Value for Money (Poin/£m, xPoin/£m, Form, Avg Mins L5M, xGI/90, BPS, % Ownership)",
-                "🛡️ Defensif & Kiper (Clean Sheet, Def Contrib/90, Saves, Avg Mins L5M, BPS, xPoin, Kemudahan Jadwal)",
+                "🎯 Ofensif & Daya Serang (xG, xA, xGI/90, Gol, Asis, Threat, Creativity, xPoin)",
+                "⭐ Profil Komprehensif FPL (Total Poin, xPoin, Form, Influence, Creativity, Threat, BPS, Poin/£m)",
+                "🛡️ Defensif & Kiper (Clean Sheet, Defensive Contribution, Tackles, Clearances, Saves, Def Contrib/90, BPS)",
+                "🪄 Kreativitas & Ancaman Serangan (Creativity, Threat, Influence, xG, xA, xGI/90, ICT Index)",
+                "💰 Efisiensi Biaya / Value for Money (Poin/£m, xPoin/£m, Form, Avg Mins L5M, Influence, BPS, % Ownership)",
                 "🛠️ Kustom (Pilih Metrik Bebas)"
             ],
             key="radar_preset_choice"
@@ -224,24 +225,31 @@ def render_player_comparison_radar_tab(df, fpl_data, teams_dict):
         )
 
     preset_metric_map = {
-        "🎯 Ofensif & Daya Serang (xG, xA, xGI/90, Gol, Asis, ICT, xPoin, Form)": [
-            'xG', 'xA', 'xGI per 90', 'Gol', 'Asis', 'ICT Index', 'xPoin', 'Form'
+        "🎯 Ofensif & Daya Serang (xG, xA, xGI/90, Gol, Asis, Threat, Creativity, xPoin)": [
+            'xG', 'xA', 'xGI per 90', 'Gol', 'Asis', 'Threat', 'Creativity', 'xPoin'
         ],
-        "⭐ Profil Komprehensif FPL (Total Poin, xPoin, Form, Avg Mins L5M, BPS, xGI/90, ICT, Poin/£m)": [
-            'Total Poin', 'xPoin', 'Form', 'Avg Mins (L5M)', 'BPS', 'xGI per 90', 'ICT Index', 'Poin per £m'
+        "⭐ Profil Komprehensif FPL (Total Poin, xPoin, Form, Influence, Creativity, Threat, BPS, Poin/£m)": [
+            'Total Poin', 'xPoin', 'Form', 'Influence', 'Creativity', 'Threat', 'BPS', 'Poin per £m'
         ],
-        "💰 Efisiensi Biaya / Value for Money (Poin/£m, xPoin/£m, Form, Avg Mins L5M, xGI/90, BPS, % Ownership)": [
-            'Poin per £m', 'xPoin per £m', 'Form', 'Avg Mins (L5M)', 'xGI per 90', 'BPS', '% Ownership'
+        "🛡️ Defensif & Kiper (Clean Sheet, Defensive Contribution, Tackles, Clearances, Saves, Def Contrib/90, BPS)": [
+            'Clean Sheet', 'Defensive Contribution', 'Tackles', 'Clearances', 'Saves', 'Defensive Contribution per 90', 'BPS'
         ],
-        "🛡️ Defensif & Kiper (Clean Sheet, Def Contrib/90, Saves, Avg Mins L5M, BPS, xPoin, Kemudahan Jadwal)": [
-            'Clean Sheet', 'Defensive Contribution per 90', 'Saves', 'Avg Mins (L5M)', 'BPS', 'xPoin', 'Kemudahan Jadwal'
+        "🪄 Kreativitas & Ancaman Serangan (Creativity, Threat, Influence, xG, xA, xGI/90, ICT Index)": [
+            'Creativity', 'Threat', 'Influence', 'xG', 'xA', 'xGI per 90', 'ICT Index'
+        ],
+        "💰 Efisiensi Biaya / Value for Money (Poin/£m, xPoin/£m, Form, Avg Mins L5M, Influence, BPS, % Ownership)": [
+            'Poin per £m', 'xPoin per £m', 'Form', 'Avg Mins (L5M)', 'Influence', 'BPS', '% Ownership'
         ]
     }
 
     all_available_metrics = [
         'Total Poin', 'xPoin', 'xPoin (Option B)', 'Form', 'Harga (£m)', 'Avg Mins (L5M)', 
         'Menit Bermain', 'Gol', 'Asis', 'xG', 'xA', 'xGI', 'xG per 90', 'xA per 90', 'xGI per 90', 
-        'ICT Index', 'BPS', 'Bonus Poin', 'Clean Sheet', 'Saves', 'Defensive Contribution per 90', 
+        'ICT Index', 'Influence', 'Creativity', 'Threat', 
+        'influence_per_90', 'creativity_per_90', 'threat_per_90',
+        'Tackles', 'Tackles per 90', 'Clearances', 'Recoveries', 'Interceptions',
+        'Defensive Contribution', 'Defensive Contribution per 90',
+        'BPS', 'Bonus Poin', 'Clean Sheet', 'Saves', 'Saves per 90',
         '% Ownership', 'Net Transfers GW', 'Poin per £m', 'xPoin per £m', 'Kemudahan Jadwal'
     ]
 
@@ -249,11 +257,11 @@ def render_player_comparison_radar_tab(df, fpl_data, teams_dict):
         active_metric_keys = st.multiselect(
             "Pilih minimal 3 metrik statistik untuk grafik radar:",
             options=all_available_metrics,
-            default=['Total Poin', 'xPoin', 'xG', 'xA', 'Form', 'ICT Index', 'BPS', 'Poin per £m'],
+            default=['Total Poin', 'xPoin', 'Influence', 'Creativity', 'Threat', 'Defensive Contribution', 'BPS', 'xGI per 90'],
             key="radar_custom_metrics"
         )
     else:
-        active_metric_keys = preset_metric_map.get(radar_preset, preset_metric_map["🎯 Ofensif & Daya Serang (xG, xA, xGI/90, Gol, Asis, ICT, xPoin, Form)"])
+        active_metric_keys = preset_metric_map.get(radar_preset, preset_metric_map["🎯 Ofensif & Daya Serang (xG, xA, xGI/90, Gol, Asis, Threat, Creativity, xPoin)"])
 
     if len(active_metric_keys) < 3:
         st.warning("Pilih minimal 3 metrik agar poligon radar chart dapat divisualisasikan dengan proporsional.")
@@ -290,11 +298,24 @@ def render_player_comparison_radar_tab(df, fpl_data, teams_dict):
         'Avg Mins (L5M)': {'label': 'Avg Mins (L5M)', 'higher_better': True, 'fmt': '{:.1f} m'},
         'Menit Bermain': {'label': 'Menit Bermain', 'higher_better': True, 'fmt': '{:.0f} m'},
         'ICT Index': {'label': 'ICT Index', 'higher_better': True, 'fmt': '{:.1f}'},
+        'Influence': {'label': 'Influence Score', 'higher_better': True, 'fmt': '{:.1f}'},
+        'Creativity': {'label': 'Creativity Score', 'higher_better': True, 'fmt': '{:.1f}'},
+        'Threat': {'label': 'Threat Score', 'higher_better': True, 'fmt': '{:.1f}'},
+        'influence_per_90': {'label': 'Influence / 90 Mins', 'higher_better': True, 'fmt': '{:.1f}'},
+        'creativity_per_90': {'label': 'Creativity / 90 Mins', 'higher_better': True, 'fmt': '{:.1f}'},
+        'threat_per_90': {'label': 'Threat / 90 Mins', 'higher_better': True, 'fmt': '{:.1f}'},
+        'Tackles': {'label': 'Tackles', 'higher_better': True, 'fmt': '{:.0f}'},
+        'Tackles per 90': {'label': 'Tackles / 90 Mins', 'higher_better': True, 'fmt': '{:.2f}'},
+        'Clearances': {'label': 'Clearances & Blocks', 'higher_better': True, 'fmt': '{:.0f}'},
+        'Recoveries': {'label': 'Ball Recoveries', 'higher_better': True, 'fmt': '{:.0f}'},
+        'Interceptions': {'label': 'Interceptions', 'higher_better': True, 'fmt': '{:.0f}'},
+        'Defensive Contribution': {'label': 'Defensive Contrib', 'higher_better': True, 'fmt': '{:.1f}'},
+        'Defensive Contribution per 90': {'label': 'Def Contrib / 90', 'higher_better': True, 'fmt': '{:.2f}'},
         'BPS': {'label': 'BPS Score', 'higher_better': True, 'fmt': '{:.0f}'},
         'Bonus Poin': {'label': 'Bonus Poin', 'higher_better': True, 'fmt': '{:.0f}'},
         'Clean Sheet': {'label': 'Clean Sheet', 'higher_better': True, 'fmt': '{:.0f}'},
         'Saves': {'label': 'Saves', 'higher_better': True, 'fmt': '{:.0f}'},
-        'Defensive Contribution per 90': {'label': 'Def Contrib / 90', 'higher_better': True, 'fmt': '{:.2f}'},
+        'Saves per 90': {'label': 'Saves / 90 Mins', 'higher_better': True, 'fmt': '{:.2f}'},
         '% Ownership': {'label': '% Ownership', 'higher_better': True, 'fmt': '{:.1f}%'},
         'Net Transfers GW': {'label': 'Net Transfers GW', 'higher_better': True, 'fmt': '{:+.0f}'},
         'Poin per £m': {'label': 'Poin / £m', 'higher_better': True, 'fmt': '{:.2f}'},
