@@ -417,7 +417,8 @@ def main():
         render_tab_option_c(fpl_data, fdr_summary, current_gw)
 
     with tab7:
-        render_tab_hidden_gem(fpl_data, fdr_summary, current_gw)
+        filtered_player_ids = set(filtered_players['id'].tolist()) if 'id' in filtered_players.columns else None
+        render_tab_hidden_gem(fpl_data, fdr_summary, current_gw, filtered_player_ids=filtered_player_ids, teams_dict=teams_dict)
 
 if __name__ == "__main__":
     main()
