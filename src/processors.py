@@ -71,24 +71,42 @@ def calculate_team_fdrs(fixtures, teams_dict):
             next_opp_id = fxs[0].get('opp_id')
             f3 = float(np.mean([x['fdr'] for x in fxs[:3]])) if len(fxs) >= 3 else f1
             f5 = float(np.mean([x['fdr'] for x in fxs[:5]])) if len(fxs) >= 5 else f3
+            f10 = float(np.mean([x['fdr'] for x in fxs[:10]])) if len(fxs) >= 10 else (float(np.mean([x['fdr'] for x in fxs])) if fxs else 3.0)
         else:
             f1 = 3.0
             f3 = 3.0
             f5 = 3.0
+            f10 = 3.0
             next_is_home = 1
             next_opp_id = None
 
         opp_name = teams_dict.get(next_opp_id, 'TBD') if next_opp_id else 'TBD'
         opp_fmt = f"{opp_name} ({'🏠' if next_is_home == 1 else '✈️'})" if next_opp_id else "-"
         
+        upcoming_10 = []
+        for x in fxs[:10]:
+            o_id = x.get('opp_id')
+            o_name = teams_dict.get(o_id, f"Team {o_id}")
+            o_home = x.get('is_home') == 1
+            upcoming_10.append({
+                'gw': x.get('gw'),
+                'opp_id': o_id,
+                'opp_name': o_name,
+                'is_home': x.get('is_home'),
+                'fdr': x.get('fdr'),
+                'label': f"{o_name} ({'H' if o_home else 'A'}) [{x.get('fdr')}]"
+            })
+
         fdr_summary[t_id] = {
             'FDR1': round(f1, 2),
             'FDR3': round(f3, 2),
             'FDR5': round(f5, 2),
+            'FDR10': round(f10, 2),
             'Next_Is_Home': next_is_home,
             'Next_Opponent_ID': next_opp_id,
             'Next_Opponent_Name': opp_name,
-            'Next_Opponent_Fmt': opp_fmt
+            'Next_Opponent_Fmt': opp_fmt,
+            'upcoming_10': upcoming_10
         }
         
     return fdr_summary
@@ -136,10 +154,15 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
             def_gk = tp[tp['Posisi'].isin(['DEF', 'GK'])]
             clean_sheets = int(def_gk['Clean Sheet'].max()) if not def_gk.empty else 0
             
-            if 'expected_goals_conceded' in def_gk.columns:
-                total_xgc = float(pd.to_numeric(def_gk['expected_goals_conceded'], errors='coerce').fillna(0.0).sum())
-            elif 'xGC' in def_gk.columns:
-                total_xgc = float(pd.to_numeric(def_gk['xGC'], errors='coerce').fillna(0.0).sum())
+            # Hitung xGC riil tim dari akumulasi xGC kiper yang bermain (atau defender jika kiper kosong)
+            gks = tp[tp['Posisi'].isin(['GK', 'GKP'])]
+            gk_xgc = float(pd.to_numeric(gks['xGC'], errors='coerce').fillna(0.0).sum()) if not gks.empty and 'xGC' in gks.columns else 0.0
+            if gk_xgc > 0:
+                total_xgc = gk_xgc
+            elif not def_gk.empty and 'xGC' in def_gk.columns:
+                total_xgc = float(pd.to_numeric(def_gk['xGC'], errors='coerce').fillna(0.0).max())
+            elif not def_gk.empty and 'expected_goals_conceded' in def_gk.columns:
+                total_xgc = float(pd.to_numeric(def_gk['expected_goals_conceded'], errors='coerce').fillna(0.0).max())
             else:
                 total_xgc = 0.0
                 
@@ -183,6 +206,7 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
         fdr1 = float(f_info.get('FDR1', 3.0))
         fdr3 = float(f_info.get('FDR3', 3.0))
         fdr5 = float(f_info.get('FDR5', 3.0))
+        fdr10 = float(f_info.get('FDR10', 3.0))
         next_opp = f_info.get('Next_Opponent_Fmt', '-')
         
         str_ovr_h = t.get('strength_overall_home', 3) or 3
@@ -215,6 +239,7 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
             'FDR1': round(fdr1, 1),
             'FDR3': round(fdr3, 2),
             'FDR5': round(fdr5, 2),
+            'FDR10': round(fdr10, 2),
             'Lawan Berikutnya': next_opp,
             'Official_Strength': str_ovr
         })
@@ -333,6 +358,7 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         fdr1 = f_info.get('FDR1', 3.0)
         fdr3 = f_info.get('FDR3', 3.0)
         fdr5 = f_info.get('FDR5', 3.0)
+        fdr10 = f_info.get('FDR10', 3.0)
         next_is_home = f_info.get('Next_Is_Home', 1)
         next_opp_fmt = f_info.get('Next_Opponent_Fmt', '-')
         next_opp_id = f_info.get('Next_Opponent_ID')
@@ -442,6 +468,7 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             'FDR1': fdr1,
             'FDR3': fdr3,
             'FDR5': fdr5,
+            'FDR10': fdr10,
             'Next_Is_Home': next_is_home,
             'Lawan GW Berikutnya': next_opp_fmt,
             'Opponent_xGC_per_90': opp_xg_def,
@@ -454,6 +481,8 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             'xG': xg,
             'xA': xa,
             'xGI': xgi,
+            'xGC': round(xgc, 2),
+            'expected_goals_conceded': round(xgc, 2),
             'xG per 90': round(xg90, 2),
             'xA per 90': round(xa90, 2),
             'xGI per 90': round(xgi90, 2),
@@ -674,9 +703,9 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         'id', 'team',
         'Nama Pemain', 'Klub', 'Lawan GW Berikutnya', 'Posisi', 'Harga (£m)', 'xPoin', 'xPoin (Option B)',
         'xG Pred (Match)', 'xA Pred (Match)', 'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
-        'Avg Mins (L5M)', 'Total Poin', 'FDR1', 'FDR3', 'FDR5', 'Form', '% Ownership', 'Net Transfers GW',
+        'Avg Mins (L5M)', 'Total Poin', 'FDR1', 'FDR3', 'FDR5', 'FDR10', 'Form', '% Ownership', 'Net Transfers GW',
         'Transfers In GW', 'Transfers Out GW',
-        'xG', 'xA', 'xGI', 'xG per 90', 'xA per 90', 'xGI per 90',
+        'xG', 'xA', 'xGI', 'xGC', 'expected_goals_conceded', 'xG per 90', 'xA per 90', 'xGI per 90',
         'xGC per 90', 'Saves per 90', 'Defensive Contribution per 90',
         'ICT Index', 'Influence', 'Creativity', 'Threat',
         'influence_per_90', 'creativity_per_90', 'threat_per_90',
