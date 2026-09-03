@@ -1,0 +1,6 @@
+{
+  "name": "Dashboard FPL",
+  "description": "Aplikasi Dashboard FPL Interaktif Menggunakan Streamlit dan API Resmi Fantasy Premier League dengan Prediktor Multi-Option xPoin, Perencana Skuad 15 Pemain, FDR 10 Match Mendatang, Komparasi Radar Chart, dan Analisis Kekuatan Tim",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
