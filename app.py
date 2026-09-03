@@ -20,6 +20,7 @@ from src.models import (
     train_option_b_models, train_xpoints_model, build_option_c_model_and_view
 )
 from src.views.tab_player_stats import render_tab_player_stats
+from src.views.tab_squad_planner import render_tab_squad_planner
 from src.views.tab_visualizations import render_tab_visualizations
 from src.views.tab_team_strength import render_tab_team_strength
 from src.views.tab_fixtures import render_tab_fixtures
@@ -27,6 +28,10 @@ from src.views.tab_option_b import render_tab_option_b
 from src.views.tab_option_c import render_tab_option_c
 from src.views.tab_radar import render_player_comparison_radar_tab
 from src.views.tab_hidden_gem import render_tab_hidden_gem
+from src.views.navigation import (
+    render_navigation_bar, render_sidebar_quick_nav,
+    render_module_footer_pager, NAV_MODULES
+)
 
 # Page Configuration
 st.set_page_config(
@@ -196,30 +201,48 @@ div[data-testid="stMetricValue"] {
     margin-top: 4px;
 }
 
-/* Tabs Design */
+/* Tabs Design - Enhanced for Auto-Wrapping and No Horizontal Scroll */
 .stTabs [data-baseweb="tab-list"] {
     gap: 8px;
     background-color: #f1f5f9;
     padding: 6px;
     border-radius: 10px;
     border: 1px solid #e2e8f0;
+    flex-wrap: wrap !important;
+    overflow-x: visible !important;
+    height: auto !important;
 }
 
 .stTabs [data-baseweb="tab"] {
-    height: 42px;
+    height: auto !important;
+    min-height: 38px;
     border-radius: 6px;
     font-weight: 600;
     color: #64748b;
     border: none !important;
     background-color: transparent;
-    padding: 0 16px;
+    padding: 8px 16px !important;
     transition: all 0.2s ease;
+    white-space: normal !important;
 }
 
 .stTabs [aria-selected="true"] {
     background-color: #ffffff !important;
     color: #0f172a !important;
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+/* Modern Pills Auto-Wrap & High-Tactile Styling */
+div[data-testid="stPills"] {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+}
+
+div[data-testid="stPills"] button {
+    border-radius: 20px !important;
+    font-weight: 600 !important;
+    padding: 6px 16px !important;
+    transition: all 0.15s ease-in-out !important;
 }
 
 /* Table Container Styling */
@@ -298,8 +321,9 @@ def main():
         return
 
     # -------------------------------------------------------------------------
-    # SIDEBAR FILTERS
+    # SIDEBAR QUICK NAVIGATION & FILTERS
     # -------------------------------------------------------------------------
+    render_sidebar_quick_nav()
     st.sidebar.header("🔍 Filter Pemain FPL")
 
     # Search Bar
@@ -387,38 +411,39 @@ def main():
             filtered_players['Nama Lengkap'].str.contains(search_query, case=False, na=False)
         ]
 
-    # Tabs Layout
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-        "📊 Player Stats & xPoin", 
-        "📈 Visualisasi Data & Radar Pemain", 
-        "🛡️ Team Strength Analysis",
-        "📅 Fixtures & FDR", 
-        "🧮 Option B: Component Model xPoin",
-        "🔮 Option C: Current Season Model",
-        "💎 Hidden Gem & Haul Predictor"
-    ])
+    # Pre-fetch Option C data for multi-option comparison (cached)
+    df_opt_c, _ = build_option_c_model_and_view(fpl_data, fdr_summary, current_gw)
 
-    with tab1:
-        render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data, teams_dict)
+    def render_content_by_id(mod_id):
+        if mod_id == "player_stats":
+            render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data, teams_dict)
+        elif mod_id == "squad_planner":
+            render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_option_c=df_opt_c)
+        elif mod_id == "visualizations":
+            render_tab_visualizations(filtered_players, players_df, fpl_data, teams_dict)
+        elif mod_id == "hidden_gem":
+            filtered_player_ids = set(filtered_players['id'].tolist()) if 'id' in filtered_players.columns else None
+            render_tab_hidden_gem(fpl_data, fdr_summary, current_gw, filtered_player_ids=filtered_player_ids, teams_dict=teams_dict)
+        elif mod_id == "option_b":
+            render_tab_option_b(filtered_players, stats_xg, stats_xa)
+        elif mod_id == "option_c":
+            render_tab_option_c(fpl_data, fdr_summary, current_gw)
+        elif mod_id == "team_strength":
+            render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data, teams_dict)
+        elif mod_id == "fixtures":
+            render_tab_fixtures(fixtures_data, teams_dict, fdr_summary)
 
-    with tab2:
-        render_tab_visualizations(filtered_players, players_df, fpl_data, teams_dict)
+    # Modern Navigation Hub (Eliminates horizontal scrolling, supports Category pills, Wrap Grid, and Classical Auto-wrap tabs)
+    active_nav_id = render_navigation_bar()
 
-    with tab3:
-        render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data, teams_dict)
-
-    with tab4:
-        render_tab_fixtures(fixtures_data, teams_dict, fdr_summary)
-
-    with tab5:
-        render_tab_option_b(filtered_players, stats_xg, stats_xa)
-
-    with tab6:
-        render_tab_option_c(fpl_data, fdr_summary, current_gw)
-
-    with tab7:
-        filtered_player_ids = set(filtered_players['id'].tolist()) if 'id' in filtered_players.columns else None
-        render_tab_hidden_gem(fpl_data, fdr_summary, current_gw, filtered_player_ids=filtered_player_ids, teams_dict=teams_dict)
+    if active_nav_id == "USE_ST_TABS":
+        st_tab_list = st.tabs([m["title"] for m in NAV_MODULES])
+        for idx, m in enumerate(NAV_MODULES):
+            with st_tab_list[idx]:
+                render_content_by_id(m["id"])
+    else:
+        render_content_by_id(active_nav_id)
+        render_module_footer_pager()
 
 if __name__ == "__main__":
     main()
