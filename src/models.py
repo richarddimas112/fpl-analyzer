@@ -352,22 +352,23 @@ def train_xpoints_model(players_list, fdr_summary, current_gw, df_historical):
                 for i, m in enumerate(sorted_hist):
                     mins = int(m.get('minutes', 0))
                     if mins > 0:
+                        eff_m_mins = max(float(mins), 60.0)
                         prev_5 = sorted_hist[max(0, i-4):i+1]
                         avg_mins_l5m = sum(int(x.get('minutes', 0)) for x in prev_5) / float(len(prev_5))
 
-                        xg90 = (float(m.get('expected_goals', 0.0)) / mins) * 90.0
-                        xa90 = (float(m.get('expected_assists', 0.0)) / mins) * 90.0
-                        xgc90 = (float(m.get('expected_goals_conceded', 0.0)) / mins) * 90.0
-                        saves90 = (float(m.get('saves', 0)) / mins) * 90.0
-                        bps90 = (float(m.get('bps', 0)) / mins) * 90.0
-                        ict90 = (float(m.get('ict_index', 0.0)) / mins) * 90.0
+                        xg90 = min(2.5, (float(m.get('expected_goals', 0.0)) / eff_m_mins) * 90.0)
+                        xa90 = min(2.0, (float(m.get('expected_assists', 0.0)) / eff_m_mins) * 90.0)
+                        xgc90 = min(4.0, (float(m.get('expected_goals_conceded', 0.0)) / eff_m_mins) * 90.0)
+                        saves90 = min(10.0, (float(m.get('saves', 0)) / eff_m_mins) * 90.0)
+                        bps90 = min(50.0, (float(m.get('bps', 0)) / eff_m_mins) * 90.0)
+                        ict90 = min(25.0, (float(m.get('ict_index', 0.0)) / eff_m_mins) * 90.0)
                         
                         tackles = float(m.get('tackles', 0))
                         interceptions = float(m.get('interceptions', 0))
                         clearances = float(m.get('clearances_blocks_interceptions', m.get('clearances', 0)))
                         recoveries = float(m.get('recoveries', 0))
                         tot_def_actions = tackles + interceptions + clearances + recoveries
-                        def_contrib_90 = (tot_def_actions / mins) * 90.0 if tot_def_actions > 0 else p_def_contrib
+                        def_contrib_90 = min(20.0, (tot_def_actions / eff_m_mins) * 90.0) if tot_def_actions > 0 else min(10.0, p_def_contrib)
 
                         history_rows.append({
                             'xG_per_90': xg90,
