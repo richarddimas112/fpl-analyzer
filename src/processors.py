@@ -183,6 +183,30 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
             sorted_by_pts = tp.sort_values(by=['Total Poin', 'xPoin'], ascending=False)
             top_asset_row = sorted_by_pts.iloc[0] if not sorted_by_pts.empty else None
             top_asset_name = f"{top_asset_row['Nama Pemain']} ({int(top_asset_row['Total Poin'])} pts)" if top_asset_row is not None else "-"
+            top_asset_pts = int(top_asset_row['Total Poin']) if top_asset_row is not None else 0
+            top_asset_raw_name = str(top_asset_row['Nama Pemain']) if top_asset_row is not None else "-"
+
+            # Standar Deviasi & Analisis Single-Player Dependency (Pemain dengan Menit Bermain > 0)
+            active_pts = active['Total Poin'] if not active.empty else pd.Series(dtype=float)
+            num_active = len(active)
+            if num_active > 1:
+                std_dev_pts = float(active_pts.std(ddof=1))
+            else:
+                std_dev_pts = 0.0
+
+            tot_active_pts = float(active_pts.sum()) if not active.empty else 0.0
+            top_player_share_pct = round((top_asset_pts / tot_active_pts * 100.0), 1) if tot_active_pts > 0 else 0.0
+            cv_pts = round(std_dev_pts / avg_points_played, 2) if avg_points_played > 0 else 0.0
+
+            # Kategori Dependensi Single Player
+            if top_player_share_pct >= 25.0 or (cv_pts >= 1.15 and top_player_share_pct >= 20.0):
+                dependency_status = "⚠️ Ekstrem (One-Man Team)"
+            elif top_player_share_pct >= 18.0 or cv_pts >= 0.95:
+                dependency_status = "⚡ Tinggi (Talisman Reliant)"
+            elif top_player_share_pct >= 14.0 or cv_pts >= 0.75:
+                dependency_status = "⚖️ Moderat (Semi-Kolektif)"
+            else:
+                dependency_status = "🤝 Kolektif (Merata)"
         else:
             total_points = 0
             avg_points_played = 0.0
@@ -201,6 +225,12 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
             top_scorer_name = "-"
             top_creator_name = "-"
             top_asset_name = "-"
+            top_asset_pts = 0
+            top_asset_raw_name = "-"
+            std_dev_pts = 0.0
+            top_player_share_pct = 0.0
+            cv_pts = 0.0
+            dependency_status = "Data Kosong"
             
         f_info = fdr_summary.get(t_id, {})
         fdr1 = float(f_info.get('FDR1', 3.0))
@@ -236,6 +266,12 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
             'Top Scorer': top_scorer_name,
             'Top Creator': top_creator_name,
             'Top Aset FPL': top_asset_name,
+            'Top Aset Poin': top_asset_pts,
+            'Top Aset Nama': top_asset_raw_name,
+            'Std Dev Poin Pemain': round(std_dev_pts, 2),
+            'CV Poin Pemain': cv_pts,
+            '% Poin Top Player': top_player_share_pct,
+            'Status Dependensi': dependency_status,
             'FDR1': round(fdr1, 1),
             'FDR3': round(fdr3, 2),
             'FDR5': round(fdr5, 2),
@@ -384,29 +420,33 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         pos_id = el.get('element_type', 1)
         pos_name = POSITION_MAP.get(pos_id, "MID")
         
+        # Damped effective minutes denominator (minimum 90 minutes baseline)
+        # to eliminate extreme small-sample rate distortions (e.g. 1 min cameos having 90 DC/90 or 225 ICT/90)
+        eff_mins = max(float(mins), 90.0)
+
         # Per 90 stats
         if mins > 0:
-            xg90 = (xg / mins) * 90.0
-            xa90 = (xa / mins) * 90.0
-            xgi90 = (xgi / mins) * 90.0
-            xgc90 = (xgc / mins) * 90.0
-            saves90 = (saves / mins) * 90.0
-            bps90 = (bps / mins) * 90.0
-            ict90 = (ict / mins) * 90.0
-            influence90 = (influence / mins) * 90.0
-            threat90 = (threat / mins) * 90.0
-            creativity90 = (creativity / mins) * 90.0
+            xg90 = min(2.5, (xg / eff_mins) * 90.0)
+            xa90 = min(2.0, (xa / eff_mins) * 90.0)
+            xgi90 = min(3.5, (xgi / eff_mins) * 90.0)
+            xgc90 = min(4.0, (xgc / eff_mins) * 90.0)
+            saves90 = min(10.0, (saves / eff_mins) * 90.0)
+            bps90 = min(50.0, (bps / eff_mins) * 90.0)
+            ict90 = min(25.0, (ict / eff_mins) * 90.0)
+            influence90 = min(120.0, (influence / eff_mins) * 90.0)
+            threat90 = min(150.0, (threat / eff_mins) * 90.0)
+            creativity90 = min(150.0, (creativity / eff_mins) * 90.0)
         else:
-            xg90 = float(el.get('expected_goals_per_90', 0.0) or 0.0)
-            xa90 = float(el.get('expected_assists_per_90', 0.0) or 0.0)
-            xgi90 = float(el.get('expected_goal_involvements_per_90', 0.0) or 0.0)
-            xgc90 = float(el.get('expected_goals_conceded_per_90', 0.0) or 0.0)
-            saves90 = float(el.get('saves_per_90', 0.0) or 0.0)
+            xg90 = 0.0
+            xa90 = 0.0
+            xgi90 = 0.0
+            xgc90 = 1.35
+            saves90 = 0.0
             bps90 = 0.0
             ict90 = 0.0
-            influence90 = float(el.get('influence_rank_type', 0.0) or 0.0) / 10.0 if el.get('influence_rank_type') else 0.0
-            threat90 = float(el.get('threat_rank_type', 0.0) or 0.0) / 10.0 if el.get('threat_rank_type') else 0.0
-            creativity90 = float(el.get('creativity_rank_type', 0.0) or 0.0) / 10.0 if el.get('creativity_rank_type') else 0.0
+            influence90 = 0.0
+            threat90 = 0.0
+            creativity90 = 0.0
 
         tackles = float(el.get('tackles', 0) or 0)
         interceptions = float(el.get('interceptions', 0) or 0)
@@ -414,10 +454,10 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         recoveries = float(el.get('recoveries', 0) or 0)
         raw_def_contrib = float(el.get('defensive_contribution', 0) or 0)
         tot_def_actions = (tackles + interceptions + clearances + recoveries) if (tackles + interceptions + clearances + recoveries) > 0 else raw_def_contrib
-        def_contrib_90 = (tot_def_actions / mins * 90.0) if mins > 0 else float(el.get('defensive_contribution_per_90', 0.0) or 0.0)
-        tackles_90 = (tackles / mins * 90.0) if mins > 0 else 0.0
-        recoveries_90 = (recoveries / mins * 90.0) if mins > 0 else 0.0
-        clearances_90 = (clearances / mins * 90.0) if mins > 0 else 0.0
+        def_contrib_90 = min(20.0, (tot_def_actions / eff_mins) * 90.0) if mins > 0 else 0.0
+        tackles_90 = min(10.0, (tackles / eff_mins) * 90.0) if mins > 0 else 0.0
+        recoveries_90 = min(15.0, (recoveries / eff_mins) * 90.0) if mins > 0 else 0.0
+        clearances_90 = min(15.0, (clearances / eff_mins) * 90.0) if mins > 0 else 0.0
 
         # L5M Average Minutes
         avg_mins_l5m = l5m_map.get(el['id'], 0.0)
@@ -576,12 +616,13 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             else:
                 feature_data[col] = sub_df.get(col, 0.0)
                 
-        X_pos = pd.DataFrame(feature_data, index=sub_df.index)
+        X_pos = pd.DataFrame(feature_data, index=sub_df.index).fillna(0.0)
         preds = model.predict(X_pos)
         
         # Penyesuaian Peluang Main (Chance of Playing Next Round)
         chance_arr = sub_df['Peluang Main GW (%)'].values / 100.0
         preds = preds * chance_arr
+        preds = np.nan_to_num(preds, nan=0.0)
         preds = np.clip(preds, 0.0, 24.0)
         xpoin_pred_all[pos_mask.values] = preds
 
