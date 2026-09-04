@@ -31,11 +31,12 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
         top_attack_team = df_teams.sort_values(by="Total xG", ascending=False).iloc[0]
         top_defense_team = df_teams.sort_values(by="Clean Sheet", ascending=False).iloc[0]
         easiest_fdr_team = df_teams.sort_values(by="FDR3", ascending=True).iloc[0]
+        top_dependency_team = df_teams.sort_values(by="% Poin Top Player", ascending=False).iloc[0]
 
-        tk1, tk2, tk3, tk4 = st.columns(4)
+        tk1, tk2, tk3, tk4, tk5 = st.columns(5)
         with tk1:
             st.metric(
-                "👑 Tim Terkuat (Indeks Tertinggi)",
+                "👑 Tim Terkuat (Indeks)",
                 f"{top_strength_team['Klub']} ({top_strength_team['Indeks Kekuatan']})",
                 top_strength_team['Kategori Tim']
             )
@@ -57,6 +58,12 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                 f"{easiest_fdr_team['Klub']} (FDR: {easiest_fdr_team['FDR3']:.2f})",
                 f"Lawan: {easiest_fdr_team['Lawan Berikutnya']}"
             )
+        with tk5:
+            st.metric(
+                "🎯 Single-Player Reliance",
+                f"{top_dependency_team['Klub']} ({top_dependency_team['% Poin Top Player']}%)",
+                f"{top_dependency_team['Top Aset FPL']} (SD: {top_dependency_team['Std Dev Poin Pemain']:.2f})"
+            )
 
         # 2. Controls: Filter & Sort
         st.markdown("##### 🔍 Filter & Urutkan Data Tim")
@@ -73,7 +80,7 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
             sort_col = st.selectbox(
                 "Urutkan Berdasarkan:",
                 options=[
-                    "Indeks Kekuatan", "Rata-rata Poin Pemain", "Total Poin Skuad",
+                    "Indeks Kekuatan", "Rata-rata Poin Pemain", "Std Dev Poin Pemain", "% Poin Top Player", "CV Poin Pemain", "Total Poin Skuad",
                     "Total Gol", "Total xG", "Clean Sheet", "Total xGC", "FDR3", "FDR5", "Kemudahan Jadwal (%)"
                 ],
                 index=0,
@@ -92,7 +99,7 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
         # 3. Comprehensive Sortable Table
         st.markdown("##### 📋 Tabel Agregasi & Pemeringkatan Kekuatan Tim")
         team_display_cols = [
-            'Klub', 'Indeks Kekuatan', 'Kategori Tim', 'Rata-rata Poin Pemain', 'Pemain Aktif', 'Total Poin Skuad',
+            'Klub', 'Indeks Kekuatan', 'Kategori Tim', 'Rata-rata Poin Pemain', 'Std Dev Poin Pemain', '% Poin Top Player', 'Status Dependensi', 'Pemain Aktif', 'Total Poin Skuad',
             'Skor Serangan', 'Total Gol', 'Total xG', 'Total xA', 'Top Scorer', 'Top Creator',
             'Skor Pertahanan', 'Clean Sheet', 'Total xGC', 'Total Saves', 'Top Aset FPL',
             'FDR1', 'FDR3', 'FDR5', 'Lawan Berikutnya', 'Nilai Skuad (£m)'
@@ -112,7 +119,19 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                 ),
                 "Skor Serangan": st.column_config.NumberColumn(format="%.1f"),
                 "Skor Pertahanan": st.column_config.NumberColumn(format="%.1f"),
-                "Rata-rata Poin Pemain": st.column_config.NumberColumn(format="%.2f pts", help="Rata-rata poin per pemain yang sudah pernah bermain"),
+                "Rata-rata Poin Pemain": st.column_config.NumberColumn(format="%.2f pts", help="Rata-rata poin per pemain yang sudah pernah bermain (Menit > 0)"),
+                "Std Dev Poin Pemain": st.column_config.NumberColumn("Std Dev Poin", format="%.2f", help="Standar deviasi perolehan poin FPL antar pemain yang aktif bermain (Menit > 0). Nilai tinggi mengindikasikan sebaran poin tidak merata / poin terkonsentrasi pada pemain kunci."),
+                "% Poin Top Player": st.column_config.ProgressColumn(
+                    "% Top Asset",
+                    help="Persentase total poin tim yang disumbangkan oleh 1 pemain tertinggi (Top Asset FPL). Menunjukkan tingkat ketergantungan klub pada satu pemain.",
+                    min_value=0,
+                    max_value=40,
+                    format="%.1f%%"
+                ),
+                "Status Dependensi": st.column_config.TextColumn(
+                    "Status Dependensi",
+                    help="Klasifikasi apakah performa tim ditopang oleh single player (One-Man Team) atau berimbang kolektif."
+                ),
                 "Total Poin Skuad": st.column_config.NumberColumn(format="%d pts"),
                 "Total xG": st.column_config.NumberColumn(format="%.2f"),
                 "Total xA": st.column_config.NumberColumn(format="%.2f"),
@@ -130,11 +149,12 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
         st.markdown("---")
         st.markdown("##### 📊 Visualisasi Perbandingan & Analisis Klub")
 
-        v_tab1, v_tab2, v_tab3, v_tab4 = st.tabs([
+        v_tab1, v_tab2, v_tab3, v_tab4, v_tab5 = st.tabs([
             "🏆 Komparasi Bar Chart Tim",
             "⚔️ vs 🛡️ Matriks Ofensif vs Defensif (Kuadran)",
             "💰 Efisiensi Nilai Skuad (Poin vs Harga)",
-            "🔍 Deep-Dive Analisis Klub & Top Aset FPL"
+            "🔍 Deep-Dive Analisis Klub & Top Aset FPL",
+            "🎯 Dispersi Poin & Single-Player Dependency"
         ])
 
         # TAB 1: CUSTOMIZABLE BAR CHART COMPARISON
@@ -148,6 +168,9 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                     options=[
                         "Indeks Kekuatan",
                         "Rata-rata Poin Pemain",
+                        "Std Dev Poin Pemain",
+                        "% Poin Top Player",
+                        "CV Poin Pemain",
                         "Total Poin Skuad",
                         "Total Gol",
                         "Total xG",
@@ -179,6 +202,8 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                 c_scale = "OrRd"
             elif "Nilai" in chosen_bar_metric:
                 c_scale = "Purp"
+            elif "Dev" in chosen_bar_metric or "Top Player" in chosen_bar_metric or "CV" in chosen_bar_metric:
+                c_scale = "Viridis"
             else:
                 c_scale = "Blues"
 
@@ -916,6 +941,214 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                 )
             else:
                 st.info(f"Jadwal mendatang untuk {selected_club}: Lawan terdekat adalah {c_info.get('Lawan Berikutnya', '-')}")
+
+        # TAB 5: DISPERSION & SINGLE-PLAYER DEPENDENCY ANALYSIS (ONE-MAN TEAM)
+        with v_tab5:
+            st.markdown("###### 🎯 Analisis Dispersi Poin & Dependensi Single Player (One-Man Team)")
+            st.caption(
+                "Analisis ini mengukur variasi dan sebaran poin antar pemain dalam setiap klub Premier League "
+                "(khusus pemain aktif dengan **menit bermain > 0**). Metrik ini dirancang untuk mendeteksi apakah performa "
+                "FPL suatu tim sangat bertumpu pada **satu pemain kunci (single player reliance)** atau terdistribusi secara **kolektif/merata**."
+            )
+
+            dep_top = df_teams.sort_values(by="% Poin Top Player", ascending=False).iloc[0]
+            dep_bottom = df_teams.sort_values(by="% Poin Top Player", ascending=True).iloc[0]
+            avg_league_sd = float(df_teams['Std Dev Poin Pemain'].mean())
+            avg_league_pct = float(df_teams['% Poin Top Player'].mean())
+
+            d1, d2, d3, d4 = st.columns(4)
+            with d1:
+                st.metric(
+                    "🎯 Tim Paling Bergantung",
+                    f"{dep_top['Klub']} ({dep_top['% Poin Top Player']}%)",
+                    f"Top Asset: {dep_top['Top Aset FPL']} ({dep_top['Status Dependensi']})"
+                )
+            with d2:
+                st.metric(
+                    "🤝 Tim Paling Kolektif/Merata",
+                    f"{dep_bottom['Klub']} ({dep_bottom['% Poin Top Player']}%)",
+                    f"Top: {dep_bottom['Top Aset FPL']} ({dep_bottom['Status Dependensi']})"
+                )
+            with d3:
+                st.metric(
+                    "📏 Rata-rata Std Deviasi EPL",
+                    f"{avg_league_sd:.2f} pts",
+                    "Variasi Poin Skuad Aktif"
+                )
+            with d4:
+                st.metric(
+                    "📊 Rata-rata Kontribusi Top Player",
+                    f"{avg_league_pct:.1f}%",
+                    "Porsi Poin 1 Pemain Terbaik"
+                )
+
+            st.markdown("---")
+
+            all_statuses = [
+                "⚠️ Ekstrem (One-Man Team)",
+                "⚡ Tinggi (Talisman Reliant)",
+                "⚖️ Moderat (Semi-Kolektif)",
+                "🤝 Kolektif (Merata)"
+            ]
+
+            # Chart Controls
+            c_disp1, c_disp2 = st.columns([2, 1])
+            with c_disp1:
+                disp_metric = st.selectbox(
+                    "Pilih Metrik Dispersi Utama untuk Ditampilkan:",
+                    options=[
+                        "% Poin Top Player (Porsi Poin Disumbang Pemain Terbaik)",
+                        "Std Dev Poin Pemain (Standar Deviasi Poin Skuad Aktif)",
+                        "CV Poin Pemain (Koefisien Variasi / Dispersi Relatif)"
+                    ],
+                    index=0,
+                    key="dispersion_metric_choice"
+                )
+            with c_disp2:
+                disp_filter_status = st.multiselect(
+                    "Filter Status Dependensi:",
+                    options=all_statuses,
+                    default=all_statuses,
+                    key="dispersion_status_filter"
+                )
+
+            metric_col_map = {
+                "% Poin Top Player (Porsi Poin Disumbang Pemain Terbaik)": "% Poin Top Player",
+                "Std Dev Poin Pemain (Standar Deviasi Poin Skuad Aktif)": "Std Dev Poin Pemain",
+                "CV Poin Pemain (Koefisien Variasi / Dispersi Relatif)": "CV Poin Pemain"
+            }
+            active_disp_col = metric_col_map[disp_metric]
+
+            df_disp = df_teams.copy()
+            if disp_filter_status:
+                df_disp = df_disp[df_disp['Status Dependensi'].isin(disp_filter_status)]
+            else:
+                st.info("ℹ️ Silakan pilih minimal satu status dependensi pada filter di atas.")
+
+            if df_disp.empty:
+                st.warning("⚠️ Tidak ada klub yang memenuhi kriteria filter status dependensi.")
+            else:
+                # 1. Horizontal Bar Chart of Dependency Ranking
+                df_disp_sorted = df_disp.sort_values(by=active_disp_col, ascending=True)
+
+                color_discrete_map = {
+                    "⚠️ Ekstrem (One-Man Team)": "#ef4444",
+                    "⚡ Tinggi (Talisman Reliant)": "#f97316",
+                    "⚖️ Moderat (Semi-Kolektif)": "#eab308",
+                    "🤝 Kolektif (Merata)": "#22c55e"
+                }
+
+                fig_disp_bar = px.bar(
+                    df_disp_sorted,
+                    x=active_disp_col,
+                    y="Klub",
+                    orientation='h',
+                    color="Status Dependensi",
+                    color_discrete_map=color_discrete_map,
+                    category_orders={"Status Dependensi": all_statuses},
+                    hover_data=["Top Aset FPL", "Rata-rata Poin Pemain", "Std Dev Poin Pemain", "% Poin Top Player", "CV Poin Pemain", "Pemain Aktif"],
+                    text="Top Aset FPL",
+                    title=f"Peringkat Dependensi Tim Premier League: {disp_metric}"
+                )
+                fig_disp_bar.update_traces(
+                    textposition='auto'
+                )
+                fig_disp_bar.update_layout(
+                    paper_bgcolor="#ffffff",
+                    plot_bgcolor="#f8fafc",
+                    font=dict(family="Plus Jakarta Sans", size=12, color="#1e293b"),
+                    height=560,
+                    xaxis=dict(gridcolor="#e2e8f0", title=active_disp_col),
+                    yaxis=dict(gridcolor="#e2e8f0", title=""),
+                    margin=dict(l=20, r=30, t=50, b=20),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                st.plotly_chart(fig_disp_bar, use_container_width=True)
+
+                # 2. Quadrant Scatter Plot: Rata-rata Poin vs Std Deviasi / % Poin Top Player
+                st.markdown("###### 🔍 Kuadran Sebaran: Efisiensi Rata-rata Tim vs Tingkat Ketergantungan")
+                
+                avg_x_val = float(df_teams['Rata-rata Poin Pemain'].mean())
+                avg_y_val = float(df_teams[active_disp_col].mean())
+
+                fig_quadrant = px.scatter(
+                    df_disp,
+                    x="Rata-rata Poin Pemain",
+                    y=active_disp_col,
+                    color="Status Dependensi",
+                    color_discrete_map=color_discrete_map,
+                    category_orders={"Status Dependensi": all_statuses},
+                    size="Total Poin Skuad",
+                    hover_name="Klub",
+                    hover_data=["Top Aset FPL", "% Poin Top Player", "Std Dev Poin Pemain", "Pemain Aktif", "Indeks Kekuatan"],
+                    text="Klub",
+                    title=f"Matriks Kuadran: Rata-rata Poin Pemain vs {active_disp_col}"
+                )
+                fig_quadrant.update_traces(textposition='top center', marker=dict(line=dict(width=1, color="#334155")))
+                fig_quadrant.add_vline(x=avg_x_val, line_dash="dash", line_color="#94a3b8", annotation_text="Rata-rata Tim Liga")
+                fig_quadrant.add_hline(y=avg_y_val, line_dash="dash", line_color="#94a3b8", annotation_text="Rata-rata Dispersi Liga")
+                fig_quadrant.update_layout(
+                    paper_bgcolor="#ffffff",
+                    plot_bgcolor="#f8fafc",
+                    font=dict(family="Plus Jakarta Sans", size=12, color="#1e293b"),
+                    height=520,
+                    xaxis=dict(gridcolor="#e2e8f0", title="Rata-rata Poin per Pemain Aktif (pts)"),
+                    yaxis=dict(gridcolor="#e2e8f0", title=active_disp_col),
+                    margin=dict(l=20, r=30, t=50, b=20)
+                )
+                st.plotly_chart(fig_quadrant, use_container_width=True)
+
+                # 3. Detailed Data Table
+                st.markdown("###### 📋 Tabel Komprehensif Dispersi & Status Ketergantungan Klub")
+                disp_table_cols = [
+                    'Klub', 'Status Dependensi', 'Top Aset FPL', '% Poin Top Player', 'Std Dev Poin Pemain', 'CV Poin Pemain',
+                    'Rata-rata Poin Pemain', 'Pemain Aktif', 'Total Poin Skuad', 'Top Scorer', 'Top Creator', 'Indeks Kekuatan'
+                ]
+                st.dataframe(
+                    df_disp[disp_table_cols].sort_values(by="% Poin Top Player", ascending=False),
+                    use_container_width=True,
+                    height=400,
+                    column_config={
+                        "% Poin Top Player": st.column_config.ProgressColumn(
+                            "% Poin Top Player",
+                            min_value=0,
+                            max_value=40,
+                            format="%.1f%%",
+                            help="Persentase total poin tim yang diraih oleh 1 pemain terbaik."
+                        ),
+                        "Std Dev Poin Pemain": st.column_config.NumberColumn(
+                            "Std Dev Poin",
+                            format="%.2f",
+                            help="Standar deviasi poin antar pemain aktif (menit > 0)."
+                        ),
+                        "CV Poin Pemain": st.column_config.NumberColumn(
+                            "CV (Koef. Variasi)",
+                            format="%.2f",
+                            help="Rasio Standar Deviasi terhadap Rata-rata Poin. Mengukur dispersi relatif tanpa bias rata-rata poin tim."
+                        ),
+                        "Rata-rata Poin Pemain": st.column_config.NumberColumn(format="%.2f pts"),
+                        "Total Poin Skuad": st.column_config.NumberColumn(format="%d pts")
+                    }
+                )
+
+            # 4. Strategic FPL Takeaways
+            st.markdown("---")
+            st.markdown("##### 💡 Rekomendasi Taktis FPL Berdasarkan Dependensi Tim")
+            rec1, rec2 = st.columns(2)
+            with rec1:
+                st.info(
+                    "**⚠️ Tim dengan Dependensi Ekstrem / Tinggi (One-Man Team):**\n"
+                    "- **Prioritas Transfer:** Wajib memiliki pemain pilar tim tersebut jika jadwalnya (FDR) bagus (misal: Cole Palmer, Haaland, Mbeumo, Salah).\n"
+                    "- **Hindari Aset Pelapis:** Hindari berinvestasi pada penyerang/gelandang kedua dari tim ini karena potensi poin mereka jauh lebih rendah.\n"
+                    "- **Risiko Cedera:** Jika pemain pilar absen, hindari seluruh aset penyerangan tim tersebut karena efisiensi tim akan anjlok drastis."
+                )
+            with rec2:
+                st.success(
+                    "**🤝 Tim dengan Dependensi Moderat / Kolektif (Balanced Team):**\n"
+                    "- **Potensi Aset Diferensial:** Poin terdistribusi merata (misal: Arsenal, Brighton, Man City saat rotasi). Banyak alternatif pemain dengan harga lebih murah.\n"
+                    "- **Risiko Rotasi & Pembagian Poin:** Kurang ideal untuk dijadikan kapten permanen karena gol dan bonus points kerap terbagi ke beberapa pemain.\n"
+                    "- **Stabilitas Tim:** Tim lebih tahan banting terhadap cedera satu pemain kunci karena sistem tim berjalan secara kolektif."
+                )
     else:
         st.warning("Data tim tidak tersedia.")
 
