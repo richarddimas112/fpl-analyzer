@@ -427,7 +427,7 @@ def main():
         elif mod_id == "option_b":
             render_tab_option_b(filtered_players, stats_xg, stats_xa)
         elif mod_id == "option_c":
-            render_tab_option_c(fpl_data, fdr_summary, current_gw)
+            render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=filtered_players, price_range=price_range, df_option_c=df_opt_c)
         elif mod_id == "team_strength":
             render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data, teams_dict)
         elif mod_id == "fixtures":
