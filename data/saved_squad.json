@@ -1,0 +1,86 @@
+{
+  "active_slot_id": "slot_1",
+  "updated_at": "2026-09-04 04:35:25",
+  "slots": {
+    "GKP 1": 572,
+    "GKP 2": 1,
+    "DEF 1": 115,
+    "DEF 2": 279,
+    "DEF 3": 8,
+    "DEF 4": 10,
+    "DEF 5": 586,
+    "MID 1": 399,
+    "MID 2": 426,
+    "MID 3": 154,
+    "MID 4": 367,
+    "MID 5": 40,
+    "FWD 1": 165,
+    "FWD 2": 316,
+    "FWD 3": 411
+  },
+  "squad_slots_data": {
+    "slot_1": {
+      "name": "Slot 1 (Utama)",
+      "updated_at": "2026-09-04 02:57:11",
+      "slots": {
+        "GKP 1": 572,
+        "GKP 2": 1,
+        "DEF 1": 115,
+        "DEF 2": 279,
+        "DEF 3": 8,
+        "DEF 4": 10,
+        "DEF 5": 586,
+        "MID 1": 399,
+        "MID 2": 426,
+        "MID 3": 154,
+        "MID 4": 367,
+        "MID 5": 40,
+        "FWD 1": 165,
+        "FWD 2": 316,
+        "FWD 3": 411
+      }
+    },
+    "slot_2": {
+      "name": "Slot 2 (Alternatif)",
+      "updated_at": null,
+      "slots": {
+        "GKP 1": 572,
+        "GKP 2": 1,
+        "DEF 1": 8,
+        "DEF 2": 279,
+        "DEF 3": 10,
+        "DEF 4": 229,
+        "DEF 5": 277,
+        "MID 1": 426,
+        "MID 2": 399,
+        "MID 3": 154,
+        "MID 4": 565,
+        "MID 5": 335,
+        "FWD 1": 165,
+        "FWD 2": 411,
+        "FWD 3": 464
+      }
+    },
+    "slot_3": {
+      "name": "Slot 3 (Eksperimen)",
+      "updated_at": null,
+      "slots": {
+        "GKP 1": 572,
+        "GKP 2": 1,
+        "DEF 1": 8,
+        "DEF 2": 279,
+        "DEF 3": 10,
+        "DEF 4": 229,
+        "DEF 5": 277,
+        "MID 1": 426,
+        "MID 2": 399,
+        "MID 3": 154,
+        "MID 4": 565,
+        "MID 5": 335,
+        "FWD 1": 165,
+        "FWD 2": 411,
+        "FWD 3": 464
+      }
+    }
+  }
+}
