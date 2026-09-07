@@ -7,8 +7,9 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from src.api import fetch_player_element_summary
+from src.views.tab_radar import launch_h2h_for_player, show_h2h_comparison_dialog
 
-def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data, teams_dict):
+def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data, teams_dict, fdr_summary=None):
     """
     Renders Tab 1: Player Stats Table, Regression Model Explanations, Classical Diagnostics, and Match Progression charts.
     """
@@ -149,12 +150,30 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
         else:
             st.warning(f"Diagnostik Uji Asumsi Klasik untuk model {diag_pos_choice} tidak dapat dihitung.")
 
-    sorted_players = filtered_players.sort_values(by="xPoin", ascending=False)
+    sorted_players = filtered_players.sort_values(by="xPoin", ascending=False).reset_index(drop=True)
 
-    st.dataframe(
+    # Interactive Table Action Guide Banner
+    st.markdown("""
+    <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-left: 4px solid #10b981; border-radius: 8px; padding: 10px 14px; margin-top: 6px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 1.1rem;">👆</span>
+            <span style="font-size: 0.85rem; color: #1e293b;">
+                <strong>Interaksi Baris Tabel:</strong> Klik pada baris pemain mana pun di tabel untuk langsung membuka <strong>Visualisasi Tren Gameweek</strong> dan opsi <strong>Komparasi H2H</strong> di bawah.
+            </span>
+        </div>
+        <span style="font-size: 0.74rem; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; padding: 2px 10px; border-radius: 12px; font-weight: 700;">
+            ⚡ 1-Klik Buka Tren & H2H
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    table_event = st.dataframe(
         sorted_players[selected_cols],
         use_container_width=True,
         height=520,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="pstats_table_selector",
         column_config={
             "Harga (£m)": st.column_config.NumberColumn(format="£%.1fm"),
             "xPoin": st.column_config.NumberColumn(format="%.2f pts"),
@@ -200,6 +219,15 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
         }
     )
 
+    # Detect row click on table and update active player
+    if table_event and hasattr(table_event, "selection") and table_event.selection:
+        selected_rows = getattr(table_event.selection, "rows", [])
+        if selected_rows and len(selected_rows) > 0:
+            row_idx = selected_rows[0]
+            if 0 <= row_idx < len(sorted_players):
+                clicked_p = sorted_players.iloc[row_idx]
+                st.session_state['selected_detail_player_id'] = int(clicked_p['id'])
+
     # ---------------------------------------------------------------------
     # ENHANCED SECTION: PLAYER PERFORMANCE & PROGRESSION OVER TIME
     # ---------------------------------------------------------------------
@@ -210,12 +238,21 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
     # Player Selector
     player_pool = filtered_players if not filtered_players.empty else players_df
     player_choices = player_pool.to_dict('records')
-    
-    default_idx = 0
-    for i, p in enumerate(player_choices):
-        if p.get('Nama Pemain') in ['Haaland', 'M.Salah', 'Saka', 'Palmer']:
-            default_idx = i
-            break
+    player_dict_by_id = {p['id']: p for p in player_choices}
+    player_ids = [p['id'] for p in player_choices]
+
+    # Synchronize with active player ID from table selection
+    curr_id = st.session_state.get('selected_detail_player_id')
+    if curr_id in player_dict_by_id:
+        default_idx = player_ids.index(curr_id)
+    else:
+        default_idx = 0
+        for i, p in enumerate(player_choices):
+            if p.get('Nama Pemain') in ['Haaland', 'M.Salah', 'Saka', 'Palmer']:
+                default_idx = i
+                break
+        if player_ids:
+            st.session_state['selected_detail_player_id'] = player_ids[default_idx]
 
     def format_player_option(p):
         if not p or not isinstance(p, dict):
@@ -236,13 +273,16 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
 
     sel_col1, sel_col2 = st.columns([3, 1])
     with sel_col1:
-        selected_player = st.selectbox(
+        selected_pid = st.selectbox(
             "Pilih Pemain untuk Melihat Tren Performa Gameweek:",
-            options=player_choices,
-            index=default_idx if 0 <= default_idx < len(player_choices) else 0,
-            format_func=format_player_option,
-            key="player_trend_selector"
+            options=player_ids,
+            index=default_idx if 0 <= default_idx < len(player_ids) else 0,
+            format_func=lambda pid: format_player_option(player_dict_by_id.get(pid)),
+            key=f"player_trend_sel_widget_{st.session_state.get('selected_detail_player_id', 'init')}"
         )
+        if selected_pid:
+            st.session_state['selected_detail_player_id'] = selected_pid
+
     with sel_col2:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
         view_mode = st.radio(
@@ -251,6 +291,10 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
             horizontal=True,
             key="player_prog_mode"
         )
+
+    selected_player = player_dict_by_id.get(st.session_state.get('selected_detail_player_id'))
+    if not selected_player and player_choices:
+        selected_player = player_choices[0]
 
     if selected_player:
         sel_pid = selected_player.get('id')
@@ -264,6 +308,7 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
         sel_pos = selected_player.get('Posisi', '-')
         sel_cost = float(selected_player.get('Harga (£m)', 0.0) or 0.0)
         sel_pts = int(selected_player.get('Total Poin', 0) or 0)
+        sel_xpts = float(selected_player.get('xPoin', 0.0) or 0.0)
         sel_xg = float(selected_player.get('xG', 0.0) or 0.0)
         sel_xa = float(selected_player.get('xA', 0.0) or 0.0)
         sel_goals = int(selected_player.get('Gol', 0) or 0)
@@ -273,6 +318,34 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
         sel_chance = selected_player.get('Peluang Main GW (%)', 100)
         sel_next_opp = selected_player.get('Lawan GW Berikutnya', '-')
         sel_fdr = selected_player.get('FDR1', 3.0)
+
+        # -----------------------------------------------------------------
+        # STEP 2: Dedicated Player Focus Card + Instant H2H Comparison Option
+        # -----------------------------------------------------------------
+        c_lead1, c_lead2 = st.columns([3.2, 1.8])
+        with c_lead1:
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); border-radius: 12px; padding: 14px 18px; color: #ffffff; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 2px;">
+                    <span style="font-size: 0.72rem; font-weight: 800; color: #10b981; text-transform: uppercase; letter-spacing: 0.08em;">Pemain Terpilih Dari Tabel</span>
+                    <span style="background: rgba(16, 185, 129, 0.18); color: #34d399; font-size: 0.72rem; padding: 1px 8px; border-radius: 8px; font-weight: 700;">{sel_pos} · {sel_club}</span>
+                </div>
+                <h3 style="margin: 0 0 4px 0; color: #ffffff; font-size: 1.25rem; font-weight: 800; letter-spacing: -0.02em;">{sel_pname}</h3>
+                <p style="margin: 0; font-size: 0.82rem; color: #94a3b8; line-height: 1.4;">
+                    Harga <strong>£{sel_cost:.1f}m</strong> · Total Poin <strong>{sel_pts} pts</strong> · Prediksi xPoin <strong>{sel_xpts:.2f}</strong> · Form <strong>{sel_form:.1f}</strong> · Lawan: <strong>{sel_next_opp}</strong> (FDR {sel_fdr})
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+        with c_lead2:
+            st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+            if st.button(
+                f"⚔️ Komparasi H2H ({sel_pname} vs Lainnya)",
+                type="primary",
+                use_container_width=True,
+                key=f"btn_h2h_action_{sel_pid}",
+                help=f"Klik untuk otomatis memunculkan Drawer Komparasi H2H ({sel_pname} vs pemain lain)"
+            ):
+                launch_h2h_for_player(sel_pid, players_df, fpl_data, teams_dict, fdr_summary=fdr_summary)
 
         # Quick Player Bio & KPI Metrics Card Row
         kp1, kp2, kp3, kp4, kp5, kp6 = st.columns(6)
