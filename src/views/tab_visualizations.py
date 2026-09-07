@@ -9,7 +9,7 @@ from scipy.stats import pearsonr
 from src.views.tab_radar import render_player_comparison_radar_tab
 from src.api import fetch_gameweek_live_points, fetch_all_gameweeks_live_points
 
-def render_tab_visualizations(filtered_players, players_df, fpl_data, teams_dict):
+def render_tab_visualizations(filtered_players, players_df, fpl_data, teams_dict, fdr_summary=None):
     """
     Renders Visualizations Tab: Box Plot (Points by Position Filtered by GW / All GW),
     Interactive Scatter Plot with Pearson Correlation, Club Aggregates Bar Chart, and Player Comparison Radar.
@@ -472,4 +472,4 @@ def render_tab_visualizations(filtered_players, players_df, fpl_data, teams_dict
 
     # SECTION 3: PLAYER RADAR COMPARISON
     with chart_subtab3:
-        render_player_comparison_radar_tab(players_df, fpl_data, teams_dict)
+        render_player_comparison_radar_tab(players_df, fpl_data, teams_dict, fdr_summary=fdr_summary)
