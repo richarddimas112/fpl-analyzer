@@ -892,15 +892,149 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
 
             st.markdown("---")
 
-            # UPCOMING FIXTURES TABLE FOR THIS CLUB
-            st.markdown(f"##### 📅 Jadwal Pertandingan Mendatang: **{selected_club}**")
-            
-            # Extract fixtures from fixtures_data or fpl_data
+            # Extract fixtures and team/player mappings
             raw_fixtures = fixtures_data or []
             if not raw_fixtures and isinstance(fpl_data, dict):
                 raw_fixtures = fpl_data.get('fixtures', [])
 
             club_t_map = teams_dict or {t['id']: t['name'] for t in fpl_data.get('teams', [])} if fpl_data else {}
+            
+            player_web_names = {}
+            if fpl_data and 'elements' in fpl_data:
+                player_web_names = {p['id']: p.get('web_name', p.get('first_name', '')) for p in fpl_data['elements']}
+            elif not players_df.empty and 'id' in players_df.columns:
+                player_web_names = dict(zip(players_df['id'], players_df['Nama Pemain']))
+
+            # 1. PAST MATCH RESULTS FOR THIS CLUB
+            st.markdown(f"##### 📜 Hasil Pertandingan Sebelumnya (Match Results): **{selected_club}**")
+            st.caption(f"Daftar pertandingan resmi Premier League yang telah selesai dimainkan oleh **{selected_club}** musim ini, dilengkapi skor akhir, pencetak gol, asis, dan poin bonus.")
+
+            past_matches_list = []
+            if raw_fixtures and t_id is not None:
+                for fx in raw_fixtures:
+                    is_played = bool(fx.get('finished') or fx.get('finished_provisional'))
+                    if is_played:
+                        h_id = fx.get('team_h')
+                        a_id = fx.get('team_a')
+                        if h_id == t_id or a_id == t_id:
+                            is_home = (h_id == t_id)
+                            opp_id = a_id if is_home else h_id
+                            opp_name = club_t_map.get(opp_id, f"Team {opp_id}")
+                            t_score = fx.get('team_h_score', 0) if is_home else fx.get('team_a_score', 0)
+                            o_score = fx.get('team_a_score', 0) if is_home else fx.get('team_h_score', 0)
+                            t_score = 0 if t_score is None else int(t_score)
+                            o_score = 0 if o_score is None else int(o_score)
+                            
+                            gw = fx.get('event', '-')
+                            kickoff = fx.get('kickoff_time', '')
+                            kickoff_str = kickoff[:10] if kickoff else '-'
+
+                            # Outcome
+                            if t_score > o_score:
+                                outcome = "🟢 Menang (W)"
+                                res_code = "W"
+                            elif t_score == o_score:
+                                outcome = "🟡 Seri (D)"
+                                res_code = "D"
+                            else:
+                                outcome = "🔴 Kalah (L)"
+                                res_code = "L"
+
+                            # Stats (Scorers, Assists, Bonus) for this team
+                            scorers = []
+                            assisters = []
+                            bonuses = []
+                            for st_item in fx.get('stats', []):
+                                ident = st_item.get('identifier')
+                                target_list = st_item.get('h' if is_home else 'a', [])
+                                if ident == 'goals_scored':
+                                    for s in target_list:
+                                        pname = player_web_names.get(s.get('element'), f"Player #{s.get('element')}")
+                                        qty = s.get('value', 1)
+                                        scorers.append(f"{pname} ({qty})" if qty > 1 else pname)
+                                elif ident == 'assists':
+                                    for a in target_list:
+                                        pname = player_web_names.get(a.get('element'), f"Player #{a.get('element')}")
+                                        qty = a.get('value', 1)
+                                        assisters.append(f"{pname} ({qty})" if qty > 1 else pname)
+                                elif ident == 'bonus':
+                                    for b in target_list:
+                                        pname = player_web_names.get(b.get('element'), f"Player #{b.get('element')}")
+                                        bonuses.append(f"{pname} (+{b.get('value', 1)})")
+
+                            past_matches_list.append({
+                                'event_num': int(fx.get('event', 0)) if isinstance(fx.get('event'), (int, float)) else 0,
+                                'Gameweek': f"GW {gw}",
+                                'Tanggal': kickoff_str,
+                                'Lawan': opp_name,
+                                'Lokasi': '🏠 Kandang' if is_home else '✈️ Tandang',
+                                'Skor Akhir': f"{t_score} - {o_score}",
+                                'Hasil': outcome,
+                                'res_code': res_code,
+                                'Gol Masuk': t_score,
+                                'Kebobolan': o_score,
+                                'Pencetak Gol': ', '.join(scorers) if scorers else '-',
+                                'Pemberi Asis': ', '.join(assisters) if assisters else '-',
+                                'Bonus BPS': ', '.join(bonuses) if bonuses else '-'
+                            })
+
+            if past_matches_list:
+                df_past = pd.DataFrame(past_matches_list).sort_values(by='event_num', ascending=True)
+
+                # Form & Summary Stats
+                total_played = len(df_past)
+                wins = len(df_past[df_past['res_code'] == 'W'])
+                draws = len(df_past[df_past['res_code'] == 'D'])
+                losses = len(df_past[df_past['res_code'] == 'L'])
+                total_gf = int(df_past['Gol Masuk'].sum())
+                total_ga = int(df_past['Kebobolan'].sum())
+                gd = total_gf - total_ga
+                clean_sheets = len(df_past[df_past['Kebobolan'] == 0])
+
+                # Form string
+                form_badges = []
+                for _, r in df_past.iterrows():
+                    if r['res_code'] == 'W':
+                        form_badges.append("<span style='background:#dcfce7; color:#166534; padding:2px 7px; border-radius:4px; font-weight:700; font-size:0.8rem; margin-right:4px;'>W</span>")
+                    elif r['res_code'] == 'D':
+                        form_badges.append("<span style='background:#fef9c3; color:#854d0e; padding:2px 7px; border-radius:4px; font-weight:700; font-size:0.8rem; margin-right:4px;'>D</span>")
+                    else:
+                        form_badges.append("<span style='background:#fee2e2; color:#991b1b; padding:2px 7px; border-radius:4px; font-weight:700; font-size:0.8rem; margin-right:4px;'>L</span>")
+                form_html = "".join(form_badges)
+
+                # Summary Row
+                pm1, pm2, pm3, pm4 = st.columns(4)
+                with pm1:
+                    st.metric("Rekor Pertandingan", f"{wins}M - {draws}S - {losses}K", f"Total {total_played} Laga")
+                with pm2:
+                    st.markdown(f"""
+                        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 14px; text-align: left;">
+                            <div style="font-size: 0.78rem; color: #64748b; font-weight: 600; text-transform: uppercase;">Form Terkini</div>
+                            <div style="margin-top: 5px;">{form_html}</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                with pm3:
+                    st.metric("Gol & Selisih (GD)", f"{total_gf} Gol · {total_ga} Kebobolan", f"Selisih Gol: {'+' if gd > 0 else ''}{gd}")
+                with pm4:
+                    st.metric("Clean Sheet", f"{clean_sheets} CS", f"Rasio CS: {(clean_sheets/total_played*100):.0f}%" if total_played > 0 else "0%")
+
+                # Table Display
+                disp_past_cols = [
+                    'Gameweek', 'Tanggal', 'Lawan', 'Lokasi', 'Skor Akhir', 'Hasil',
+                    'Pencetak Gol', 'Pemberi Asis', 'Bonus BPS'
+                ]
+                st.dataframe(
+                    df_past[disp_past_cols],
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info(f"Belum ada data pertandingan selesai untuk {selected_club} musim ini.")
+
+            st.markdown("---")
+
+            # 2. UPCOMING FIXTURES TABLE FOR THIS CLUB
+            st.markdown(f"##### 📅 Jadwal Pertandingan Mendatang: **{selected_club}**")
             
             club_fixtures_list = []
             if raw_fixtures and t_id is not None:
