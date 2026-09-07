@@ -5,6 +5,7 @@ Constants and configurations for FPL Scout Analytics.
 BOOTSTRAP_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 FIXTURES_URL = "https://fantasy.premierleague.com/api/fixtures/"
 ELEMENT_SUMMARY_URL = "https://fantasy.premierleague.com/api/element-summary/{}/"
+EVENT_LIVE_URL = "https://fantasy.premierleague.com/api/event/{}/live/"
 
 POSITION_MAP = {
     1: "GK",

@@ -4,7 +4,7 @@ API Fetching module for FPL Scout Analytics with caching and session reuse.
 
 import requests
 import streamlit as st
-from src.constants import BOOTSTRAP_URL, FIXTURES_URL, ELEMENT_SUMMARY_URL, HEADERS
+from src.constants import BOOTSTRAP_URL, FIXTURES_URL, ELEMENT_SUMMARY_URL, EVENT_LIVE_URL, HEADERS
 
 _session = None
 
@@ -80,3 +80,30 @@ def fetch_player_element_summary(player_id):
         return {}
     except Exception as e:
         return {}
+
+@st.cache_data(ttl=3600)
+def fetch_gameweek_live_points(event_id):
+    """Mengambil data performa match-by-match live pemain per Gameweek tertentu."""
+    try:
+        session = get_http_session()
+        url = EVENT_LIVE_URL.format(event_id)
+        response = session.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            elements_map = {}
+            for elem in data.get('elements', []):
+                elements_map[int(elem['id'])] = elem.get('stats', {})
+            return elements_map
+        return {}
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=3600)
+def fetch_all_gameweeks_live_points(event_ids_tuple):
+    """Mengambil dan menggabungkan data match-by-match seluruh Gameweek yang sudah/sedang berjalan."""
+    all_gw_map = {}
+    for ev_id in event_ids_tuple:
+        all_gw_map[int(ev_id)] = fetch_gameweek_live_points(int(ev_id))
+    return all_gw_map
+
+
