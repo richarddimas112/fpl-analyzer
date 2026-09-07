@@ -47,7 +47,7 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
 html, body, [class*="css"] {
-    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     color: #0f172a;
 }
 
@@ -55,10 +55,31 @@ html, body, [class*="css"] {
     background-color: #f8fafc;
 }
 
+/* Container Spacing & Max Width for Professional Look */
+.block-container {
+    padding-top: 1.25rem !important;
+    padding-bottom: 3rem !important;
+    padding-left: 2rem !important;
+    padding-right: 2rem !important;
+    max-width: 1440px !important;
+}
+
 /* Header & Brand Container */
 header[data-testid="stHeader"] {
     background-color: transparent !important;
 }
+
+/* Typography Hierarchy */
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    letter-spacing: -0.025em !important;
+    color: #0f172a !important;
+}
+
+h1 { font-weight: 800 !important; }
+h2 { font-weight: 800 !important; }
+h3 { font-weight: 700 !important; }
+h4 { font-weight: 700 !important; }
 
 /* Sidebar Custom Styling */
 section[data-testid="stSidebar"] {
@@ -77,19 +98,25 @@ section[data-testid="stSidebar"] .stMarkdown h3 {
 div[data-baseweb="select"] > div, div[data-baseweb="input"] > div {
     border-radius: 8px !important;
     border-color: #cbd5e1 !important;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+    transition: all 0.15s ease-in-out !important;
+}
+
+div[data-baseweb="select"] > div:hover, div[data-baseweb="input"] > div:hover {
+    border-color: #94a3b8 !important;
 }
 
 /* Brand Banner Card */
 .fpl-brand-header {
-    background: linear-gradient(135deg, #020617 0%, #0f172a 50%, #1e1b4b 100%);
+    background: linear-gradient(135deg, #090d16 0%, #0f172a 50%, #1e1b4b 100%);
     border-radius: 14px;
-    padding: 24px 32px;
+    padding: 22px 30px;
     color: #ffffff;
-    margin-bottom: 24px;
+    margin-bottom: 22px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.15), 0 8px 10px -6px rgba(15, 23, 42, 0.1);
+    box-shadow: 0 8px 24px -4px rgba(15, 23, 42, 0.15);
     border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -101,28 +128,28 @@ div[data-baseweb="select"] > div, div[data-baseweb="input"] > div {
 
 .fpl-logo-badge {
     background: linear-gradient(135deg, #38ef7d 0%, #11998e 100%);
-    width: 52px;
-    height: 52px;
+    width: 50px;
+    height: 50px;
     border-radius: 12px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 26px;
+    font-size: 24px;
     box-shadow: 0 4px 12px rgba(56, 239, 125, 0.35);
 }
 
 .fpl-brand-name {
-    font-size: 1.55rem;
+    font-size: 1.5rem;
     font-weight: 800;
     letter-spacing: -0.025em;
     margin: 0;
-    color: #ffffff;
+    color: #ffffff !important;
 }
 
 .fpl-brand-subtitle {
-    font-size: 0.88rem;
+    font-size: 0.86rem;
     color: #94a3b8;
-    margin-top: 4px;
+    margin-top: 3px;
     margin-bottom: 0;
 }
 
@@ -151,32 +178,38 @@ div[data-baseweb="select"] > div, div[data-baseweb="input"] > div {
 /* Metric Cards Refinement */
 div[data-testid="stMetric"] {
     background-color: #ffffff;
-    border: 1px solid #e2e8f0;
+    border: 1.5px solid #e2e8f0;
     border-radius: 12px;
     padding: 16px 20px;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03), 0 2px 6px rgba(15, 23, 42, 0.02);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+div[data-testid="stMetric"]:hover {
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+    border-color: #cbd5e1;
 }
 
 div[data-testid="stMetricLabel"] {
     color: #64748b;
-    font-weight: 600;
-    font-size: 0.82rem;
+    font-weight: 700;
+    font-size: 0.78rem;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.06em;
 }
 
 div[data-testid="stMetricValue"] {
     color: #0f172a;
     font-weight: 800;
-    font-size: 1.65rem;
-    letter-spacing: -0.02em;
+    font-size: 1.6rem;
+    letter-spacing: -0.025em;
 }
 
 /* Pearson Correlation Insight Card */
 .corr-card {
     background: #f8fafc;
     border: 1px solid #e2e8f0;
-    border-left: 4px solid #3b82f6;
+    border-left: 4px solid #2563eb;
     border-radius: 10px;
     padding: 16px 20px;
     margin: 16px 0;
@@ -248,21 +281,52 @@ div[data-testid="stPills"] button {
 /* Table Container Styling */
 div[data-testid="stDataFrame"] {
     border-radius: 10px;
-    border: 1px solid #e2e8f0;
+    border: 1.5px solid #e2e8f0;
     overflow: hidden;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
+}
+
+/* Expanders */
+div[data-testid="stExpander"] {
+    border-radius: 10px !important;
+    border: 1.5px solid #e2e8f0 !important;
+    background-color: #ffffff !important;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.02) !important;
+    margin-bottom: 12px !important;
+}
+
+/* Dialog / Modal Window Styling */
+div[role="dialog"] {
+    border-radius: 16px !important;
+    border: 1.5px solid #cbd5e1 !important;
+    box-shadow: 0 20px 40px -15px rgba(15, 23, 42, 0.3) !important;
 }
 
 /* Buttons */
 .stButton > button {
     border-radius: 8px;
     font-weight: 600;
-    border: 1px solid #cbd5e1;
-    transition: all 0.2s ease;
+    border: 1.5px solid #cbd5e1;
+    transition: all 0.15s ease-in-out;
 }
 
 .stButton > button:hover {
     border-color: #94a3b8;
     background-color: #f8fafc;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+}
+
+.stButton > button[kind="primary"] {
+    background-color: #2563eb !important;
+    border-color: #2563eb !important;
+    color: #ffffff !important;
+    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.25);
+}
+
+.stButton > button[kind="primary"]:hover {
+    background-color: #1d4ed8 !important;
+    border-color: #1d4ed8 !important;
+    box-shadow: 0 4px 10px rgba(37, 99, 235, 0.35);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -416,11 +480,11 @@ def main():
 
     def render_content_by_id(mod_id):
         if mod_id == "player_stats":
-            render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data, teams_dict)
+            render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data, teams_dict, fdr_summary=fdr_summary)
         elif mod_id == "squad_planner":
             render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_option_c=df_opt_c)
         elif mod_id == "visualizations":
-            render_tab_visualizations(filtered_players, players_df, fpl_data, teams_dict)
+            render_tab_visualizations(filtered_players, players_df, fpl_data, teams_dict, fdr_summary=fdr_summary)
         elif mod_id == "hidden_gem":
             filtered_player_ids = set(filtered_players['id'].tolist()) if 'id' in filtered_players.columns else None
             render_tab_hidden_gem(fpl_data, fdr_summary, current_gw, filtered_player_ids=filtered_player_ids, teams_dict=teams_dict)

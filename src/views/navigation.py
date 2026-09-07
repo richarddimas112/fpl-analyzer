@@ -23,9 +23,9 @@ NAV_MODULES = [
     {
         "id": "visualizations",
         "category": "⚽ Pemain & Skuad",
-        "title": "📈 Visualisasi Data & Radar Pemain",
-        "badge": "Box Plot, Scatter & Radar",
-        "desc": "Box plot komparasi distribusi poin antar posisi (filter per GW / All GW), scatter plot interaktif dengan korelasi Pearson, dan radar chart H2H."
+        "title": "📈 Visualisasi Data & Distribusi",
+        "badge": "Box Plot, Scatter & Radar H2H",
+        "desc": "Box plot komparasi distribusi poin antar posisi (filter per GW / All GW), scatter plot interaktif dengan korelasi Pearson, agregat klub, serta komparasi 2 pemain (radar chart)."
     },
     {
         "id": "hidden_gem",
