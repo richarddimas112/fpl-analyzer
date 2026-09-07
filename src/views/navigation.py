@@ -16,7 +16,7 @@ NAV_MODULES = [
     {
         "id": "squad_planner",
         "category": "⚽ Pemain & Skuad",
-        "title": "👥 Perencana 15 Pemain & Multi-xPoin",
+        "title": "👥 Squad Planner",
         "badge": "15 Skuad & FDR10",
         "desc": "Kelola skuad 15 pemain FPL pilihan Anda, bandingkan estimasi xPoin dari seluruh model (Default, Option B, Option C), dan pantau FDR 10 match."
     },
@@ -24,8 +24,8 @@ NAV_MODULES = [
         "id": "visualizations",
         "category": "⚽ Pemain & Skuad",
         "title": "📈 Visualisasi Data & Radar Pemain",
-        "badge": "Scatter & Radar H2H",
-        "desc": "Scatter plot interaktif, korelasi matriks Pearson, serta visualisasi Radar Chart perbandingan head-to-head 2 pemain."
+        "badge": "Box Plot, Scatter & Radar",
+        "desc": "Box plot komparasi distribusi poin antar posisi (filter per GW / All GW), scatter plot interaktif dengan korelasi Pearson, dan radar chart H2H."
     },
     {
         "id": "hidden_gem",
