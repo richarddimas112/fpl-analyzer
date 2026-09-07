@@ -348,25 +348,40 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
 
             st.markdown("---")
             st.markdown(f"##### 📤 Impor Skuad ke **{current_slot_name}**")
-            uploaded_file = st.file_uploader("Pilih file cadangan skuad (.json):", type=["json"], key="upload_squad_file")
+            
+            # Show any pending import notification
+            if "squad_import_msg" in st.session_state:
+                st.success(st.session_state.pop("squad_import_msg"))
+
+            uploaded_file = st.file_uploader(
+                "Pilih file cadangan skuad (.json):", 
+                type=["json"], 
+                key=f"upload_squad_file_{active_slot_id}"
+            )
             if uploaded_file is not None:
                 try:
+                    uploaded_file.seek(0)
                     imported_json = json.load(uploaded_file)
                     imp_slots = imported_json.get("slots", {})
                     valid_ids = set(players_df['id'].dropna().astype(int).tolist())
                     all_valid = len(imp_slots) == 15 and all(int(pid) in valid_ids for pid in imp_slots.values())
                     if all_valid:
                         formatted_slots = {k: int(v) for k, v in imp_slots.items()}
-                        st.session_state["my_15_squad_slots"] = formatted_slots
-                        st.session_state["squad_slots_data"][active_slot_id]["slots"] = formatted_slots
-                        st.session_state["squad_revision"] = st.session_state.get("squad_revision", 0) + 1
-                        save_persisted_squad(formatted_slots)
-                        st.success(f"✅ Berhasil memulihkan skuad ke {current_slot_name}!")
-                        st.rerun()
+                        preview_cost = sum(player_lookup_cost.get(int(pid), 5.0) for pid in formatted_slots.values())
+                        preview_xp = sum(player_lookup_xp.get(int(pid), 3.0) for pid in formatted_slots.values())
+                        st.info(f"📄 **File Valid**: 15 pemain lengkap | Estimasi Biaya: **£{preview_cost:.1f}m** | Est. xPoin: **{preview_xp:.1f} pts**")
+                        
+                        if st.button(f"📥 Terapkan Skuad dari File ke {current_slot_name}", key="btn_apply_uploaded_squad", type="primary", use_container_width=True):
+                            st.session_state["my_15_squad_slots"] = formatted_slots
+                            st.session_state["squad_slots_data"][active_slot_id]["slots"] = formatted_slots
+                            st.session_state["squad_revision"] = st.session_state.get("squad_revision", 0) + 1
+                            save_persisted_squad(formatted_slots)
+                            st.session_state["squad_import_msg"] = f"✅ Berhasil memulihkan skuad dari file cadangan ke {current_slot_name}!"
+                            st.rerun()
                     else:
-                        st.error("Format file cadangan tidak sesuai atau ada ID pemain yang tidak valid.")
+                        st.error("⚠️ Format file cadangan tidak sesuai atau ada ID pemain yang tidak valid di database.")
                 except Exception as ex:
-                    st.error(f"Gagal membaca file cadangan: {ex}")
+                    st.error(f"⚠️ Gagal membaca file cadangan: {ex}")
 
             st.markdown("---")
             st.markdown(f"##### 🔄 Reset **{current_slot_name}**")
@@ -466,6 +481,19 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
         def make_player_label(p_row):
             return f"{p_row['Klub']} | {p_row['Nama Pemain']} (£{p_row['Harga (£m)']:.1f}m) - xPoin: {p_row['xPoin']:.2f} | FDR1: {p_row['FDR1']:.1f}"
 
+        def on_slot_select_change(slot_key, w_key):
+            new_pid = st.session_state.get(w_key)
+            if new_pid is not None:
+                new_pid = int(new_pid)
+                if "my_15_squad_slots" in st.session_state:
+                    st.session_state["my_15_squad_slots"][slot_key] = new_pid
+                act_slot = st.session_state.get("active_slot_id", "slot_1")
+                sl_data = st.session_state.get("squad_slots_data", {})
+                if act_slot in sl_data:
+                    sl_data[act_slot]["slots"][slot_key] = new_pid
+                    sl_data[act_slot]["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                save_persisted_squad(st.session_state.get("my_15_squad_slots"))
+
         # Tab GKP
         with pos_tabs[0]:
             gk_pool = df_merged[df_merged['Posisi'] == 'GK'].sort_values(by=['xPoin', 'Total Poin'], ascending=False)
@@ -478,17 +506,16 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
                 with col:
                     st.markdown(f"**Slot {slot_key}**")
                     curr_idx = gk_options.index(curr_pid) if curr_pid in gk_options else 0
-                    sel_id = st.selectbox(
+                    w_key = f"sel_{active_slot_id}_{slot_key}_{squad_revision}"
+                    st.selectbox(
                         f"Pilih Pemain {slot_key}",
                         options=gk_options,
                         index=curr_idx,
                         format_func=lambda x: make_player_label(player_dict_by_id.get(x, {})),
-                        key=f"sel_{active_slot_id}_{slot_key}_{squad_revision}"
+                        key=w_key,
+                        on_change=on_slot_select_change,
+                        args=(slot_key, w_key)
                     )
-                    if sel_id != curr_pid:
-                        st.session_state["my_15_squad_slots"][slot_key] = sel_id
-                        save_persisted_squad(st.session_state["my_15_squad_slots"])
-                        st.rerun()
 
         # Tab DEF
         with pos_tabs[1]:
@@ -502,17 +529,16 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
                 with col:
                     st.markdown(f"**Slot {slot_key}**")
                     curr_idx = def_options.index(curr_pid) if curr_pid in def_options else 0
-                    sel_id = st.selectbox(
+                    w_key = f"sel_{active_slot_id}_{slot_key}_{squad_revision}"
+                    st.selectbox(
                         f"Pilih {slot_key}",
                         options=def_options,
                         index=curr_idx,
                         format_func=lambda x: make_player_label(player_dict_by_id.get(x, {})),
-                        key=f"sel_{active_slot_id}_{slot_key}_{squad_revision}"
+                        key=w_key,
+                        on_change=on_slot_select_change,
+                        args=(slot_key, w_key)
                     )
-                    if sel_id != curr_pid:
-                        st.session_state["my_15_squad_slots"][slot_key] = sel_id
-                        save_persisted_squad(st.session_state["my_15_squad_slots"])
-                        st.rerun()
 
         # Tab MID
         with pos_tabs[2]:
@@ -526,17 +552,16 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
                 with col:
                     st.markdown(f"**Slot {slot_key}**")
                     curr_idx = mid_options.index(curr_pid) if curr_pid in mid_options else 0
-                    sel_id = st.selectbox(
+                    w_key = f"sel_{active_slot_id}_{slot_key}_{squad_revision}"
+                    st.selectbox(
                         f"Pilih {slot_key}",
                         options=mid_options,
                         index=curr_idx,
                         format_func=lambda x: make_player_label(player_dict_by_id.get(x, {})),
-                        key=f"sel_{active_slot_id}_{slot_key}_{squad_revision}"
+                        key=w_key,
+                        on_change=on_slot_select_change,
+                        args=(slot_key, w_key)
                     )
-                    if sel_id != curr_pid:
-                        st.session_state["my_15_squad_slots"][slot_key] = sel_id
-                        save_persisted_squad(st.session_state["my_15_squad_slots"])
-                        st.rerun()
 
         # Tab FWD
         with pos_tabs[3]:
@@ -550,17 +575,16 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
                 with col:
                     st.markdown(f"**Slot {slot_key}**")
                     curr_idx = fwd_options.index(curr_pid) if curr_pid in fwd_options else 0
-                    sel_id = st.selectbox(
+                    w_key = f"sel_{active_slot_id}_{slot_key}_{squad_revision}"
+                    st.selectbox(
                         f"Pilih {slot_key}",
                         options=fwd_options,
                         index=curr_idx,
                         format_func=lambda x: make_player_label(player_dict_by_id.get(x, {})),
-                        key=f"sel_{active_slot_id}_{slot_key}_{squad_revision}"
+                        key=w_key,
+                        on_change=on_slot_select_change,
+                        args=(slot_key, w_key)
                     )
-                    if sel_id != curr_pid:
-                        st.session_state["my_15_squad_slots"][slot_key] = sel_id
-                        save_persisted_squad(st.session_state["my_15_squad_slots"])
-                        st.rerun()
 
         # Tab Quick Swap Tool
         with pos_tabs[4]:
