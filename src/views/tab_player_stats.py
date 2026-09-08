@@ -29,24 +29,6 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
         top_form = filtered_players.sort_values(by="Form", ascending=False).iloc[0] if not filtered_players.empty else None
         st.metric("Form Terbaik", f"{top_form['Nama Pemain']} ({top_form['Form']})" if top_form is not None else "-")
 
-    # Expander for Custom Column Selection
-    default_cols = [
-        'Nama Pemain', 'Klub', 'Posisi', 'Harga (£m)', 'xPoin', 'Avg Mins (L5M)', 'Total Poin',
-        'FDR1', 'FDR3', 'FDR5', 'Form', '% Ownership', 'xG', 'xA', 'Status', 'Peluang Main GW (%)'
-    ]
-    
-    with st.expander("⚙️ Pilih Kolom yang Ingin Ditampilkan pada Tabel", expanded=False):
-        available_table_cols = [c for c in players_df.columns if c not in ['id', 'team']]
-        selected_cols = st.multiselect(
-            "Centang/Pilih kolom data FPL yang ingin dimunculkan di tabel:",
-            options=available_table_cols,
-            default=default_cols,
-            key="table_cols_picker"
-        )
-    
-    if not selected_cols:
-        selected_cols = default_cols
-
     # Expander for Positional Regression Model Details
     with st.expander("🤖 Detail 4 Model Regression xPoin Berdasarkan Posisi (FWD, MID, DEF, GK)", expanded=False):
         pos_tab1, pos_tab2, pos_tab3, pos_tab4 = st.tabs(["⚽ FWD (Penyerang)", "🎯 MID (Gelandang)", "🛡️ DEF (Bek)", "🧤 GK (Kiper)"])
@@ -150,22 +132,272 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
         else:
             st.warning(f"Diagnostik Uji Asumsi Klasik untuk model {diag_pos_choice} tidak dapat dihitung.")
 
-    sorted_players = filtered_players.sort_values(by="xPoin", ascending=False).reset_index(drop=True)
+    if filtered_players.empty:
+        st.markdown("""
+        <div style="background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 12px; padding: 36px 24px; text-align: center; margin: 18px 0;">
+            <span style="font-size: 2.4rem; display: block; margin-bottom: 8px;">🔍</span>
+            <h4 style="margin: 0 0 6px 0; color: #0f172a; font-weight: 800;">Tidak Ada Pemain yang Memenuhi Filter</h4>
+            <p style="margin: 0; color: #64748b; font-size: 0.88rem;">Coba longgarkan rentang harga, total poin, atau klub yang dipilih pada bilah filter samping (sidebar).</p>
+        </div>
+        """, unsafe_allow_html=True)
+        return
 
-    # Interactive Table Action Guide Banner
-    st.markdown("""
-    <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-left: 4px solid #10b981; border-radius: 8px; padding: 10px 14px; margin-top: 6px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+    # -------------------------------------------------------------------------
+    # DATA DENSITY & SCANNABILITY: VIEW PRESETS & IN-TABLE CONTROLS
+    # -------------------------------------------------------------------------
+    PRESET_COLUMNS = {
+        "⭐ Inti & Value": [
+            'Nama Pemain', 'Klub', 'Posisi', 'Harga (£m)', 'xPoin', 'xPoin per £m', 'Form',
+            'Lawan GW Berikutnya', 'FDR1', 'Total Poin', 'Poin per £m', 'Avg Mins (L5M)',
+            'Peluang Main GW (%)', '% Ownership', 'Status'
+        ],
+        "⚡ Ofensif & Kreativitas": [
+            'Nama Pemain', 'Klub', 'Posisi', 'Harga (£m)', 'xPoin', 'Gol', 'Asis', 'xG', 'xA', 'xGI',
+            'xG per 90', 'xA per 90', 'Threat', 'Creativity', 'ICT Index', 'Lawan GW Berikutnya'
+        ],
+        "🛡️ Soliditas Bertahan": [
+            'Nama Pemain', 'Klub', 'Posisi', 'Harga (£m)', 'xPoin', 'Clean Sheet', 'xGC', 'Tackles',
+            'CBI', 'Recoveries', 'Defensive Contribution', 'Defensive Contribution per 90',
+            'Saves', 'BPS', 'Lawan GW Berikutnya', 'FDR1'
+        ],
+        "📈 Pasar & Transfer GW": [
+            'Nama Pemain', 'Klub', 'Posisi', 'Harga (£m)', 'xPoin', 'Form', '% Ownership',
+            'Net Transfers GW', 'Transfers In GW', 'Transfers Out GW', 'Total Poin', 'Status', 'Berita Cedera'
+        ],
+        "🗓️ Jadwal & Rotasi": [
+            'Nama Pemain', 'Klub', 'Posisi', 'Harga (£m)', 'xPoin', 'Lawan GW Berikutnya', 'FDR1', 'FDR3', 'FDR5',
+            'Avg Mins (L5M)', 'Menit Bermain', 'Peluang Main GW (%)', 'Status', 'Berita Cedera'
+        ],
+        "🛠️ Kustom": None
+    }
+
+    ctrl_c1, ctrl_c2 = st.columns([3.2, 1.8])
+    with ctrl_c1:
+        preset_choice = st.segmented_control(
+            "Mode Tampilan Kolom (Presets):",
+            options=list(PRESET_COLUMNS.keys()),
+            default="⭐ Inti & Value",
+            key="pstats_view_preset_sel"
+        )
+    with ctrl_c2:
+        quick_table_query = st.text_input(
+            "🔍 Filter Cepat Pemain di Tabel:",
+            placeholder="Cari nama pemain...",
+            key="pstats_quick_table_filter"
+        )
+
+    # Determine Active Columns
+    available_table_cols = [c for c in players_df.columns if c not in ['id', 'team']]
+    if preset_choice and preset_choice != "🛠️ Kustom":
+        preset_target = PRESET_COLUMNS.get(preset_choice, PRESET_COLUMNS["⭐ Inti & Value"])
+        selected_cols = [c for c in preset_target if c in players_df.columns]
+    else:
+        with st.expander("⚙️ Pilih Kolom Kustom yang Ingin Ditampilkan", expanded=True):
+            selected_cols = st.multiselect(
+                "Pilih kolom data yang ingin dimunculkan di tabel:",
+                options=available_table_cols,
+                default=PRESET_COLUMNS["⭐ Inti & Value"],
+                key="table_cols_picker"
+            )
+        if not selected_cols:
+            selected_cols = [c for c in PRESET_COLUMNS["⭐ Inti & Value"] if c in players_df.columns]
+
+    # Ensure 'Nama Pemain' is always present as the first pinned column
+    if 'Nama Pemain' not in selected_cols:
+        selected_cols = ['Nama Pemain'] + selected_cols
+
+    # Sort and filter players for table display
+    sorted_players = filtered_players.sort_values(by="xPoin", ascending=False).reset_index(drop=True)
+    if quick_table_query and str(quick_table_query).strip():
+        q = str(quick_table_query).strip()
+        sorted_players = sorted_players[
+            sorted_players['Nama Pemain'].str.contains(q, case=False, na=False) |
+            sorted_players['Nama Lengkap'].str.contains(q, case=False, na=False) |
+            sorted_players['Klub'].str.contains(q, case=False, na=False)
+        ].reset_index(drop=True)
+
+    # Interactive Table Action Guide & Status Banner
+    st.markdown(f"""
+    <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-left: 4px solid #10b981; border-radius: 8px; padding: 9px 14px; margin-top: 4px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
         <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 1.1rem;">👆</span>
-            <span style="font-size: 0.85rem; color: #1e293b;">
-                <strong>Interaksi Baris Tabel:</strong> Klik pada baris pemain mana pun di tabel untuk langsung membuka <strong>Visualisasi Tren Gameweek</strong> dan opsi <strong>Komparasi H2H</strong> di bawah.
+            <span style="font-size: 1.05rem;">👆</span>
+            <span style="font-size: 0.84rem; color: #1e293b;">
+                <strong>Interaksi Baris:</strong> Klik baris pemain mana pun untuk membuka <strong>Tren Gameweek</strong> &amp; <strong>Duel Komparasi H2H</strong> di bawah.
             </span>
         </div>
-        <span style="font-size: 0.74rem; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; padding: 2px 10px; border-radius: 12px; font-weight: 700;">
-            ⚡ 1-Klik Buka Tren & H2H
-        </span>
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 0.76rem; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; padding: 2px 8px; border-radius: 6px; font-weight: 600;">
+                Menampilkan {len(sorted_players)} pemain
+            </span>
+            <span style="font-size: 0.74rem; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; padding: 2px 8px; border-radius: 6px; font-weight: 700;">
+                📌 Nama Terkunci (Pinned)
+            </span>
+        </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # High-Density and Scannable Column Configuration
+    table_column_config = {
+        # Pinned Identity Columns
+        "Nama Pemain": st.column_config.TextColumn(
+            "Nama Pemain",
+            pinned=True,
+            width="medium",
+            help="Nama pemain FPL. Kolom terkunci saat scroll horizontal. Klik baris untuk detail tren & H2H."
+        ),
+        "Nama Lengkap": st.column_config.TextColumn("Nama Lengkap", width="medium"),
+        "Klub": st.column_config.TextColumn("Klub", width="small"),
+        "Posisi": st.column_config.TextColumn("Posisi", width="small"),
+        "Harga (£m)": st.column_config.NumberColumn(
+            "Harga",
+            format="£%.1fm",
+            width="small",
+            help="Harga pemain saat ini dalam juta Poundsterling."
+        ),
+        
+        # Visual Mini Progress Columns (Instant Visual Scannability)
+        "xPoin": st.column_config.ProgressColumn(
+            "xPoin",
+            format="%.2f",
+            min_value=0.0,
+            max_value=12.0,
+            width="medium",
+            help="Prediksi poin Gameweek berikutnya (model regresi posisi). Dilengkapi mini-bar visual."
+        ),
+        "Form": st.column_config.ProgressColumn(
+            "Form",
+            format="%.1f",
+            min_value=0.0,
+            max_value=12.0,
+            width="medium",
+            help="Rata-rata poin per laga dalam 30 hari terakhir. Dilengkapi mini-bar visual."
+        ),
+        "% Ownership": st.column_config.ProgressColumn(
+            "Kepemilikan",
+            format="%.1f%%",
+            min_value=0.0,
+            max_value=100.0,
+            width="medium",
+            help="Persentase kepemilikan oleh manajer FPL secara global."
+        ),
+        "Peluang Main GW (%)": st.column_config.ProgressColumn(
+            "Peluang Main",
+            min_value=0,
+            max_value=100,
+            format="%d%%",
+            width="small",
+            help="Peluang bermain pada Gameweek berikutnya berdasarkan data resmi FPL."
+        ),
+
+        # Value & Efficiency Metrics
+        "xPoin per £m": st.column_config.NumberColumn(
+            "xP/£m",
+            format="%.2f",
+            width="small",
+            help="Efisiensi prediksi xPoin per £1m harga pemain (Value for Money)."
+        ),
+        "Poin per £m": st.column_config.NumberColumn(
+            "Pts/£m",
+            format="%.1f",
+            width="small",
+            help="Efisiensi total poin historis per £1m harga saat ini."
+        ),
+        "Total Poin": st.column_config.NumberColumn(
+            "Total Pts",
+            format="%d pts",
+            width="small"
+        ),
+
+        # Fixture Difficulty & Schedule
+        "Lawan GW Berikutnya": st.column_config.TextColumn(
+            "Lawan GW",
+            width="small",
+            help="Lawan pada Gameweek berikutnya (H = Home / Kandang, A = Away / Tandang)."
+        ),
+        "FDR1": st.column_config.NumberColumn(
+            "FDR1",
+            format="%.1f",
+            width="small",
+            help="Fixture Difficulty Rating laga berikutnya (1=Termudah, 5=Tersulit)."
+        ),
+        "FDR3": st.column_config.NumberColumn(
+            "FDR3",
+            format="%.2f",
+            width="small",
+            help="Rata-rata FDR 3 pertandingan mendatang."
+        ),
+        "FDR5": st.column_config.NumberColumn(
+            "FDR5",
+            format="%.2f",
+            width="small",
+            help="Rata-rata FDR 5 pertandingan mendatang."
+        ),
+
+        # Playing Time & Minutes
+        "Avg Mins (L5M)": st.column_config.NumberColumn(
+            "Mins L5M",
+            format="%.0f'",
+            width="small",
+            help="Rata-rata menit bermain dalam 5 pertandingan terakhir."
+        ),
+        "Menit Bermain": st.column_config.NumberColumn(
+            "Menit Total",
+            format="%d'",
+            width="small"
+        ),
+
+        # Market & Transfers
+        "Net Transfers GW": st.column_config.NumberColumn(
+            "Net Transfer",
+            format="%+d",
+            width="small",
+            help="Transfer masuk dikurangi transfer keluar pekan ini."
+        ),
+        "Transfers In GW": st.column_config.NumberColumn("Transfer In", format="%d", width="small"),
+        "Transfers Out GW": st.column_config.NumberColumn("Transfer Out", format="%d", width="small"),
+
+        # Attacking & Creativity
+        "Gol": st.column_config.NumberColumn("Gol", format="%d", width="small"),
+        "Asis": st.column_config.NumberColumn("Asis", format="%d", width="small"),
+        "xG": st.column_config.NumberColumn("xG", format="%.2f", width="small", help="Expected Goals"),
+        "xA": st.column_config.NumberColumn("xA", format="%.2f", width="small", help="Expected Assists"),
+        "xGI": st.column_config.NumberColumn("xGI", format="%.2f", width="small", help="Expected Goal Involvement"),
+        "xG per 90": st.column_config.NumberColumn("xG/90", format="%.2f", width="small"),
+        "xA per 90": st.column_config.NumberColumn("xA/90", format="%.2f", width="small"),
+        "xGI per 90": st.column_config.NumberColumn("xGI/90", format="%.2f", width="small"),
+        "ICT Index": st.column_config.NumberColumn("ICT", format="%.1f", width="small"),
+        "Influence": st.column_config.NumberColumn("Influence", format="%.1f", width="small"),
+        "Creativity": st.column_config.NumberColumn("Creativity", format="%.1f", width="small"),
+        "Threat": st.column_config.NumberColumn("Threat", format="%.1f", width="small"),
+
+        # Defensive & Goalkeeping
+        "Clean Sheet": st.column_config.NumberColumn("CS", format="%d", width="small"),
+        "xGC": st.column_config.NumberColumn("xGC", format="%.2f", width="small", help="Expected Goals Conceded"),
+        "xGC per 90": st.column_config.NumberColumn("xGC/90", format="%.2f", width="small"),
+        "Saves": st.column_config.NumberColumn("Saves", format="%d", width="small"),
+        "Saves per 90": st.column_config.NumberColumn("Saves/90", format="%.2f", width="small"),
+        "Tackles": st.column_config.NumberColumn("Tackles", format="%d", width="small", help="Total Tekel"),
+        "Tackles per 90": st.column_config.NumberColumn("Tackles/90", format="%.2f", width="small"),
+        "CBI": st.column_config.NumberColumn("CBI", format="%d", width="small", help="Clearances, Blocks, & Interceptions (Aksi Bertahan Opta/BPS)"),
+        "CBI per 90": st.column_config.NumberColumn("CBI/90", format="%.2f", width="small"),
+        "Clearances": st.column_config.NumberColumn("CBI", format="%d", width="small", help="Clearances, Blocks, & Interceptions"),
+        "Recoveries": st.column_config.NumberColumn("Recv", format="%d", width="small", help="Recoveries (Perebutan Bola Liar)"),
+        "Recoveries per 90": st.column_config.NumberColumn("Recv/90", format="%.2f", width="small"),
+        "Interceptions": st.column_config.NumberColumn("Intc", format="%d", width="small", help="Interceptions (Tidak dipisahkan oleh FPL API, sudah termasuk di CBI)"),
+        "Defensive Contribution": st.column_config.NumberColumn("Def Contrib", format="%.1f", width="small", help="Total Aksi Bertahan (Tackles + CBI + Recoveries)"),
+        "Defensive Contribution per 90": st.column_config.NumberColumn("DC/90", format="%.2f", width="small"),
+
+        # Bonus & Discipline
+        "BPS": st.column_config.NumberColumn("BPS", format="%d", width="small"),
+        "Bonus Poin": st.column_config.NumberColumn("Bonus", format="%d", width="small"),
+        "Kartu Kuning": st.column_config.NumberColumn("KK", format="%d", width="small"),
+        "Kartu Merah": st.column_config.NumberColumn("KM", format="%d", width="small"),
+        "Status": st.column_config.TextColumn("Status", width="small"),
+        "Berita Cedera": st.column_config.TextColumn("Berita Cedera", width="medium"),
+        "Penalti Order": st.column_config.TextColumn("Penalti", width="small"),
+        "Free Kick Order": st.column_config.TextColumn("Free Kick", width="small"),
+        "Corner Order": st.column_config.TextColumn("Corner", width="small")
+    }
 
     table_event = st.dataframe(
         sorted_players[selected_cols],
@@ -174,49 +406,7 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
         on_select="rerun",
         selection_mode="single-row",
         key="pstats_table_selector",
-        column_config={
-            "Harga (£m)": st.column_config.NumberColumn(format="£%.1fm"),
-            "xPoin": st.column_config.NumberColumn(format="%.2f pts"),
-            "Avg Mins (L5M)": st.column_config.NumberColumn(format="%.1f mins"),
-            "Total Poin": st.column_config.NumberColumn(format="%d pts"),
-            "FDR1": st.column_config.NumberColumn(format="%.1f"),
-            "FDR3": st.column_config.NumberColumn(format="%.2f"),
-            "FDR5": st.column_config.NumberColumn(format="%.2f"),
-            "Menit Bermain": st.column_config.NumberColumn(format="%d mins"),
-            "Form": st.column_config.NumberColumn(format="%.2f"),
-            "% Ownership": st.column_config.NumberColumn(format="%.1f%%"),
-            "Net Transfers GW": st.column_config.NumberColumn(format="%+d"),
-            "Transfers In GW": st.column_config.NumberColumn(format="%d"),
-            "Transfers Out GW": st.column_config.NumberColumn(format="%d"),
-            "xG": st.column_config.NumberColumn(format="%.2f"),
-            "xA": st.column_config.NumberColumn(format="%.2f"),
-            "xGI": st.column_config.NumberColumn(format="%.2f"),
-            "xG per 90": st.column_config.NumberColumn(format="%.2f"),
-            "xA per 90": st.column_config.NumberColumn(format="%.2f"),
-            "xGI per 90": st.column_config.NumberColumn(format="%.2f"),
-            "ICT Index": st.column_config.NumberColumn(format="%.1f"),
-            "Influence": st.column_config.NumberColumn(format="%.1f"),
-            "Creativity": st.column_config.NumberColumn(format="%.1f"),
-            "Threat": st.column_config.NumberColumn(format="%.1f"),
-            "Tackles": st.column_config.NumberColumn(format="%d"),
-            "Tackles per 90": st.column_config.NumberColumn(format="%.2f"),
-            "Clearances": st.column_config.NumberColumn(format="%d"),
-            "Recoveries": st.column_config.NumberColumn(format="%d"),
-            "Interceptions": st.column_config.NumberColumn(format="%d"),
-            "Defensive Contribution": st.column_config.NumberColumn(format="%.1f"),
-            "Defensive Contribution per 90": st.column_config.NumberColumn(format="%.2f"),
-            "BPS": st.column_config.NumberColumn(format="%d"),
-            "Bonus Poin": st.column_config.NumberColumn(format="%d"),
-            "Kartu Kuning": st.column_config.NumberColumn(format="%d"),
-            "Kartu Merah": st.column_config.NumberColumn(format="%d"),
-            "Saves": st.column_config.NumberColumn(format="%d"),
-            "Peluang Main GW (%)": st.column_config.ProgressColumn(
-                "Peluang Main GW (%)",
-                min_value=0,
-                max_value=100,
-                format="%d%%"
-            )
-        }
+        column_config=table_column_config
     )
 
     # Detect row click on table and update active player
@@ -397,6 +587,7 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
                     'Threat': round(float(h.get('threat', 0.0)), 1),
                     'ICT Index': round(float(h.get('ict_index', 0.0)), 1),
                     'Tackles': int(h.get('tackles', 0) or 0),
+                    'CBI': int(h.get('clearances_blocks_interceptions', 0) or 0),
                     'Clearances': int(h.get('clearances_blocks_interceptions', 0) or 0),
                     'Recoveries': int(h.get('recoveries', 0) or 0),
                     'Defensive Contribution': round(float(h.get('defensive_contribution', (int(h.get('tackles', 0) or 0) + int(h.get('clearances_blocks_interceptions', 0) or 0) + int(h.get('recoveries', 0) or 0)))), 1),
@@ -422,6 +613,8 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
             df_phist['Kumulatif Threat'] = df_phist['Threat'].cumsum().round(1)
             df_phist['Kumulatif ICT Index'] = df_phist['ICT Index'].cumsum().round(1)
             df_phist['Kumulatif Tackles'] = df_phist['Tackles'].cumsum()
+            df_phist['Kumulatif CBI'] = df_phist['CBI'].cumsum()
+            df_phist['Kumulatif Recoveries'] = df_phist['Recoveries'].cumsum()
             df_phist['Kumulatif Defensive Contribution'] = df_phist['Defensive Contribution'].cumsum().round(1)
             df_phist['Kumulatif Menit Bermain'] = df_phist['Menit Bermain'].cumsum()
 
@@ -429,7 +622,7 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
             available_metrics = [
                 'Total Poin', 'xG', 'xA', 'Gol', 'Asis', 'xGI', 
                 'Influence', 'Creativity', 'Threat', 'ICT Index',
-                'Tackles', 'Clearances', 'Recoveries', 'Defensive Contribution',
+                'Tackles', 'CBI', 'Clearances', 'Recoveries', 'Defensive Contribution',
                 'Menit Bermain', 'BPS', 'Bonus Poin', 'Clean Sheet', 'Saves'
             ]
             default_metrics = ['Total Poin', 'xG', 'xA', 'Influence', 'Creativity', 'Threat']
@@ -517,7 +710,7 @@ def render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data,
                 st.dataframe(
                     df_phist[[
                         'Gameweek', 'Lawan', 'Total Poin', 'Gol', 'Asis', 'xG', 'xA', 'xGI',
-                        'Influence', 'Creativity', 'Threat', 'ICT Index', 'Tackles', 'Defensive Contribution',
+                        'Influence', 'Creativity', 'Threat', 'ICT Index', 'Tackles', 'CBI', 'Recoveries', 'Defensive Contribution',
                         'Menit Bermain', 'BPS', 'Bonus Poin', 'Clean Sheet', 'Saves', 'Harga (£m)'
                     ]],
                     use_container_width=True,

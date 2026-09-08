@@ -65,23 +65,76 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                 f"{top_dependency_team['Top Aset FPL']} (SD: {top_dependency_team['Std Dev Poin Pemain']:.2f})"
             )
 
-        # 2. Controls: Filter & Sort
-        st.markdown("##### 🔍 Filter & Urutkan Data Tim")
-        t_col1, t_col2, t_col3 = st.columns(3)
+        # 2. Controls: Presets, Filter & Sort
+        PRESET_TEAM_COLUMNS = {
+            "⭐ Komposit & Klasemen": [
+                'Klub', 'Indeks Kekuatan', 'Kategori Tim', 'Skor Serangan', 'Skor Pertahanan',
+                'Kemudahan Jadwal (%)', 'Rata-rata Poin Pemain', 'Total Poin Skuad', 'Top Aset FPL',
+                'Lawan Berikutnya', 'FDR1', 'Nilai Skuad (£m)'
+            ],
+            "⚔️ Potensi Serangan": [
+                'Klub', 'Skor Serangan', 'Total Gol', 'Total xG', 'Total xA', 'Total xGI',
+                'Top Scorer', 'Top Creator', 'Lawan Berikutnya', 'FDR1', 'Indeks Kekuatan'
+            ],
+            "🛡️ Pertahanan & Kebobolan": [
+                'Klub', 'Skor Pertahanan', 'Clean Sheet', 'Kebobolan (GC)', 'Total xGC', 'Total Saves',
+                'Lawan Berikutnya', 'FDR1', 'FDR3', 'FDR5', 'Indeks Kekuatan'
+            ],
+            "🎯 Dependensi & Talisman": [
+                'Klub', '% Poin Top Player', 'Status Dependensi', 'Top Aset FPL', 'Top Aset Poin',
+                'Std Dev Poin Pemain', 'CV Poin Pemain', 'Rata-rata Poin Pemain', 'Pemain Aktif'
+            ],
+            "🗓️ Jadwal & Nilai Skuad": [
+                'Klub', 'Lawan Berikutnya', 'FDR1', 'FDR3', 'FDR5', 'FDR10',
+                'Kemudahan Jadwal (%)', 'Nilai Skuad (£m)', 'Total Poin Skuad', 'Pemain Aktif'
+            ],
+            "🛠️ Kustom": None
+        }
+
+        st.markdown("##### 🔍 Pengaturan Tampilan & Filter Klub")
+        c_mode1, c_mode2 = st.columns([3.2, 1.8])
+        with c_mode1:
+            preset_choice = st.segmented_control(
+                "Mode Tampilan Kolom (Presets):",
+                options=list(PRESET_TEAM_COLUMNS.keys()),
+                default="⭐ Komposit & Klasemen",
+                key="team_view_preset_sel"
+            )
+        with c_mode2:
+            team_search = st.text_input("🔍 Cari Nama Klub:", "", placeholder="Misal: Arsenal, Liverpool...", key="team_search_input")
+
+        # Column selection resolution
+        available_team_cols = [c for c in df_teams.columns if c not in ['team_id']]
+        if preset_choice and preset_choice != "🛠️ Kustom":
+            preset_target = PRESET_TEAM_COLUMNS.get(preset_choice, PRESET_TEAM_COLUMNS["⭐ Komposit & Klasemen"])
+            selected_team_cols = [c for c in preset_target if c in df_teams.columns]
+        else:
+            with st.expander("⚙️ Pilih Kolom Kustom yang Ingin Ditampilkan", expanded=True):
+                selected_team_cols = st.multiselect(
+                    "Pilih kolom data kekuatan tim yang ingin dimunculkan:",
+                    options=available_team_cols,
+                    default=PRESET_TEAM_COLUMNS["⭐ Komposit & Klasemen"],
+                    key="team_table_cols_picker"
+                )
+            if not selected_team_cols:
+                selected_team_cols = [c for c in PRESET_TEAM_COLUMNS["⭐ Komposit & Klasemen"] if c in df_teams.columns]
+
+        if 'Klub' not in selected_team_cols:
+            selected_team_cols = ['Klub'] + selected_team_cols
+
+        t_col1, t_col2 = st.columns([1, 1])
         with t_col1:
-            team_search = st.text_input("Cari Nama Klub", "", placeholder="Misal: Arsenal, Liverpool...", key="team_search_input")
-        with t_col2:
             tier_filter = st.selectbox(
                 "Filter Kategori Kekuatan:",
                 options=["Semua Kategori", "🏆 Elite Contender", "🌟 Top Tier Challenger", "⚖️ Mid-Table Stable", "⚠️ Underdogs / Rebuilding"],
                 key="team_tier_filter"
             )
-        with t_col3:
+        with t_col2:
             sort_col = st.selectbox(
                 "Urutkan Berdasarkan:",
                 options=[
                     "Indeks Kekuatan", "Rata-rata Poin Pemain", "Std Dev Poin Pemain", "% Poin Top Player", "CV Poin Pemain", "Total Poin Skuad",
-                    "Total Gol", "Total xG", "Clean Sheet", "Total xGC", "FDR3", "FDR5", "Kemudahan Jadwal (%)"
+                    "Total Gol", "Total xG", "Clean Sheet", "Kebobolan (GC)", "Total xGC", "FDR3", "FDR5", "Kemudahan Jadwal (%)", "Nilai Skuad (£m)"
                 ],
                 index=0,
                 key="team_sort_col"
@@ -93,57 +146,186 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
         if tier_filter != "Semua Kategori":
             filtered_teams = filtered_teams[filtered_teams['Kategori Tim'] == tier_filter]
 
-        is_asc = (sort_col in ["FDR3", "FDR5", "Total xGC"])
-        filtered_teams = filtered_teams.sort_values(by=sort_col, ascending=is_asc)
+        if filtered_teams.empty:
+            st.markdown("""
+            <div style="background: #f8fafc; border: 2px dashed #cbd5e1; border-radius: 12px; padding: 32px 20px; text-align: center; margin: 16px 0;">
+                <span style="font-size: 2.2rem; display: block; margin-bottom: 6px;">🔍</span>
+                <h4 style="margin: 0 0 4px 0; color: #0f172a; font-weight: 800;">Tidak Ada Klub yang Sesuai Filter</h4>
+                <p style="margin: 0; color: #64748b; font-size: 0.86rem;">Coba reset kata kunci pencarian atau pilih 'Semua Kategori' pada filter di atas.</p>
+            </div>
+            """, unsafe_allow_html=True)
+            return
 
-        # 3. Comprehensive Sortable Table
+        is_asc = (sort_col in ["FDR3", "FDR5", "Total xGC", "Kebobolan (GC)", "Kebobolan"])
+        filtered_teams = filtered_teams.sort_values(by=sort_col, ascending=is_asc).reset_index(drop=True)
+
+        # 3. Comprehensive Sortable Table with High Data Density & Scannability
         st.markdown("##### 📋 Tabel Agregasi & Pemeringkatan Kekuatan Tim")
-        team_display_cols = [
-            'Klub', 'Indeks Kekuatan', 'Kategori Tim', 'Rata-rata Poin Pemain', 'Std Dev Poin Pemain', '% Poin Top Player', 'Status Dependensi', 'Pemain Aktif', 'Total Poin Skuad',
-            'Skor Serangan', 'Total Gol', 'Total xG', 'Total xA', 'Top Scorer', 'Top Creator',
-            'Skor Pertahanan', 'Clean Sheet', 'Total xGC', 'Total Saves', 'Top Aset FPL',
-            'FDR1', 'FDR3', 'FDR5', 'Lawan Berikutnya', 'Nilai Skuad (£m)'
-        ]
+        
+        # Interactive Table Action Guide & Status Banner
+        st.markdown(f"""
+        <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-left: 4px solid #10b981; border-radius: 8px; padding: 9px 14px; margin-top: 4px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 1.05rem;">👆</span>
+                <span style="font-size: 0.84rem; color: #1e293b;">
+                    <strong>Interaksi Baris:</strong> Klik baris klub mana pun untuk langsung memilih klub tersebut pada visualisasi <strong>Deep-Dive &amp; Starting XI</strong> di bawah.
+                </span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 0.76rem; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; padding: 2px 8px; border-radius: 6px; font-weight: 600;">
+                    Menampilkan {len(filtered_teams)} klub
+                </span>
+                <span style="font-size: 0.74rem; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; padding: 2px 8px; border-radius: 6px; font-weight: 700;">
+                    📌 Nama Klub Terkunci (Pinned)
+                </span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        st.dataframe(
-            filtered_teams[team_display_cols],
+        team_column_config = {
+            # Pinned Identity Columns
+            "Klub": st.column_config.TextColumn(
+                "Klub",
+                pinned=True,
+                width="medium",
+                help="Nama klub Premier League. Kolom terkunci saat scroll horizontal. Klik baris untuk langsung memilih klub pada analisis Deep-Dive di bawah."
+            ),
+            "Kode": st.column_config.TextColumn("Kode", width="small"),
+            "Kategori Tim": st.column_config.TextColumn("Kategori", width="medium"),
+
+            # Visual In-Cell Mini Progress Columns
+            "Indeks Kekuatan": st.column_config.ProgressColumn(
+                "Indeks Kekuatan",
+                help="Indeks Komposit (0 - 100): 20% Serangan, 20% Pertahanan, 15% Rata-rata Poin, 30% Official EPL Strength, 15% Kemudahan FDR.",
+                min_value=0,
+                max_value=100,
+                format="%.1f",
+                width="medium"
+            ),
+            "Skor Serangan": st.column_config.ProgressColumn(
+                "Skor Serangan",
+                help="Skor agresivitas ofensif (0-100) berbasis akumulasi xG dan Gol.",
+                min_value=0,
+                max_value=100,
+                format="%.1f",
+                width="medium"
+            ),
+            "Skor Pertahanan": st.column_config.ProgressColumn(
+                "Skor Pertahanan",
+                help="Skor ketangguhan defensif (0-100): 40% minimalisir xGC (underlying), 35% minimalisir Kebobolan Riil (GC), dan 25% Clean Sheet (konversi FPL).",
+                min_value=0,
+                max_value=100,
+                format="%.1f",
+                width="medium"
+            ),
+            "Kemudahan Jadwal (%)": st.column_config.ProgressColumn(
+                "Jadwal (%)",
+                help="Tingkat kemudahan jadwal 3 pertandingan ke depan (FDR3 ternormalisasi).",
+                min_value=0,
+                max_value=100,
+                format="%.1f%%",
+                width="medium"
+            ),
+            "% Poin Top Player": st.column_config.ProgressColumn(
+                "% Top Asset",
+                help="Persentase total poin tim yang disumbangkan oleh 1 pemain kunci tertinggi (Top Asset FPL).",
+                min_value=0,
+                max_value=40,
+                format="%.1f%%",
+                width="small"
+            ),
+
+            # Compact Numeric & Detail Columns
+            "Rata-rata Poin Pemain": st.column_config.NumberColumn(
+                "Rata2 Pts",
+                format="%.2f pts",
+                width="small",
+                help="Rata-rata poin per pemain yang sudah pernah bermain (Menit > 0)"
+            ),
+            "Rata-rata Poin Skuad": st.column_config.NumberColumn(
+                "Rata2 Skuad",
+                format="%.1f pts",
+                width="small"
+            ),
+            "Std Dev Poin Pemain": st.column_config.NumberColumn(
+                "Std Dev",
+                format="%.2f",
+                width="small",
+                help="Standar deviasi perolehan poin FPL antar pemain aktif. Nilai tinggi mengindikasikan poin terkonsentrasi pada pemain kunci."
+            ),
+            "CV Poin Pemain": st.column_config.NumberColumn(
+                "CV Variasi",
+                format="%.2f",
+                width="small",
+                help="Koefisien Variasi (Std Dev / Rata-rata). Mengukur rasio ketimpangan sebaran poin."
+            ),
+            "Status Dependensi": st.column_config.TextColumn(
+                "Status Dependensi",
+                width="medium",
+                help="Klasifikasi apakah performa tim ditopang oleh single player (One-Man Team) atau berimbang kolektif."
+            ),
+            "Total Poin Skuad": st.column_config.NumberColumn("Total Poin", format="%d pts", width="small"),
+            "Pemain Aktif": st.column_config.NumberColumn("Aktif", format="%d", width="small"),
+            "Total Pemain": st.column_config.NumberColumn("Total Pemain", format="%d", width="small"),
+            "Nilai Skuad (£m)": st.column_config.NumberColumn("Nilai Skuad", format="£%.1fm", width="small"),
+
+            # Attacking Metrics
+            "Total Gol": st.column_config.NumberColumn("Gol", format="%d", width="small"),
+            "Total Asis": st.column_config.NumberColumn("Asis", format="%d", width="small"),
+            "Total xG": st.column_config.NumberColumn("Total xG", format="%.2f", width="small"),
+            "Total xA": st.column_config.NumberColumn("Total xA", format="%.2f", width="small"),
+            "Total xGI": st.column_config.NumberColumn("Total xGI", format="%.2f", width="small"),
+            "Top Scorer": st.column_config.TextColumn("Top Scorer", width="medium"),
+            "Top Creator": st.column_config.TextColumn("Top Creator", width="medium"),
+            "Top Aset FPL": st.column_config.TextColumn("Top Aset FPL", width="medium"),
+            "Top Aset Poin": st.column_config.NumberColumn("Pts Aset", format="%d", width="small"),
+
+            # Defensive Metrics
+            "Clean Sheet": st.column_config.NumberColumn("Clean Sheet", format="%d", width="small"),
+            "Kebobolan (GC)": st.column_config.NumberColumn(
+                "Kebobolan (GC)",
+                format="%d",
+                width="small",
+                help="Jumlah total gol yang bersarang ke gawang tim secara aktual (Goals Conceded / GC) musim berjalan."
+            ),
+            "Kebobolan": st.column_config.NumberColumn(
+                "Kebobolan (GC)",
+                format="%d",
+                width="small",
+                help="Jumlah total gol yang bersarang ke gawang tim secara aktual (Goals Conceded / GC) musim berjalan."
+            ),
+            "Total xGC": st.column_config.NumberColumn("Total xGC", format="%.2f", width="small"),
+            "Total Saves": st.column_config.NumberColumn("Saves", format="%d", width="small"),
+            "Total BPS": st.column_config.NumberColumn("Total BPS", format="%d", width="small"),
+
+            # Schedule & Difficulty
+            "Lawan Berikutnya": st.column_config.TextColumn("Lawan GW", width="small"),
+            "FDR1": st.column_config.NumberColumn("FDR1", format="%.1f", width="small", help="Tingkat Kesulitan Lawan GW Terdekat (1 Laga)"),
+            "FDR3": st.column_config.NumberColumn("FDR3", format="%.2f", width="small", help="Rata-rata FDR 3 Pertandingan Mendatang"),
+            "FDR5": st.column_config.NumberColumn("FDR5", format="%.2f", width="small", help="Rata-rata FDR 5 Pertandingan Mendatang"),
+            "FDR10": st.column_config.NumberColumn("FDR10", format="%.2f", width="small", help="Rata-rata FDR 10 Pertandingan Mendatang")
+        }
+
+        team_table_event = st.dataframe(
+            filtered_teams[selected_team_cols],
             use_container_width=True,
-            height=460,
-            column_config={
-                "Indeks Kekuatan": st.column_config.ProgressColumn(
-                    "Indeks Kekuatan",
-                    help="Indeks Komposit (0 - 100): 20% Serangan, 20% Pertahanan, 15% Rata-rata Poin, 30% Official EPL Strength, 15% Kemudahan FDR.",
-                    min_value=0,
-                    max_value=100,
-                    format="%.1f"
-                ),
-                "Skor Serangan": st.column_config.NumberColumn(format="%.1f"),
-                "Skor Pertahanan": st.column_config.NumberColumn(format="%.1f"),
-                "Rata-rata Poin Pemain": st.column_config.NumberColumn(format="%.2f pts", help="Rata-rata poin per pemain yang sudah pernah bermain (Menit > 0)"),
-                "Std Dev Poin Pemain": st.column_config.NumberColumn("Std Dev Poin", format="%.2f", help="Standar deviasi perolehan poin FPL antar pemain yang aktif bermain (Menit > 0). Nilai tinggi mengindikasikan sebaran poin tidak merata / poin terkonsentrasi pada pemain kunci."),
-                "% Poin Top Player": st.column_config.ProgressColumn(
-                    "% Top Asset",
-                    help="Persentase total poin tim yang disumbangkan oleh 1 pemain tertinggi (Top Asset FPL). Menunjukkan tingkat ketergantungan klub pada satu pemain.",
-                    min_value=0,
-                    max_value=40,
-                    format="%.1f%%"
-                ),
-                "Status Dependensi": st.column_config.TextColumn(
-                    "Status Dependensi",
-                    help="Klasifikasi apakah performa tim ditopang oleh single player (One-Man Team) atau berimbang kolektif."
-                ),
-                "Total Poin Skuad": st.column_config.NumberColumn(format="%d pts"),
-                "Total xG": st.column_config.NumberColumn(format="%.2f"),
-                "Total xA": st.column_config.NumberColumn(format="%.2f"),
-                "Total xGC": st.column_config.NumberColumn(format="%.2f"),
-                "Nilai Skuad (£m)": st.column_config.NumberColumn(format="£%.1fm"),
-                "FDR1": st.column_config.NumberColumn("FDR1", format="%.1f", help="Tingkat Kesulitan Lawan GW Terdekat (1 Laga)"),
-                "FDR3": st.column_config.NumberColumn("FDR3", format="%.2f", help="Rata-rata FDR 3 Pertandingan Mendatang"),
-                "FDR5": st.column_config.NumberColumn("FDR5", format="%.2f", help="Rata-rata FDR 5 Pertandingan Mendatang")
-            }
+            height=490,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="team_strength_table_selector",
+            column_config=team_column_config
         )
 
-        st.caption("💡 *Formula Indeks Kekuatan: 20% Metrik Serangan (xG & Gol) + 20% Pertahanan (Clean Sheet & xGC) + 15% Efisiensi Poin Pemain + 30% Official EPL Strength + 15% Kemudahan Jadwal (FDR3).*")
+        # Detect row selection and update selected club for Deep-Dive view
+        if team_table_event and hasattr(team_table_event, "selection") and team_table_event.selection:
+            selected_rows = getattr(team_table_event.selection, "rows", [])
+            if selected_rows and len(selected_rows) > 0:
+                row_idx = selected_rows[0]
+                if 0 <= row_idx < len(filtered_teams):
+                    clicked_club = filtered_teams.iloc[row_idx]['Klub']
+                    st.session_state['selected_deepdive_club'] = clicked_club
+
+        st.caption("💡 *Formula Indeks Kekuatan: 20% Metrik Serangan (xG & Gol) + 20% Pertahanan (xGC, GC, & CS) + 15% Efisiensi Poin Pemain + 30% Official EPL Strength + 15% Kemudahan Jadwal (FDR3).*")
 
         # 4. Interactive Visualizations & Deep-Dive for Teams
         st.markdown("---")
@@ -175,6 +357,7 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                         "Total Gol",
                         "Total xG",
                         "Clean Sheet",
+                        "Kebobolan (GC)",
                         "Total xA",
                         "Total Saves",
                         "Skor Serangan",
@@ -198,6 +381,8 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
             # Palette selection based on metric type
             if "Pertahanan" in chosen_bar_metric or "Clean" in chosen_bar_metric or "Saves" in chosen_bar_metric:
                 c_scale = "Tealgrn"
+            elif "Kebobolan" in chosen_bar_metric or "xGC" in chosen_bar_metric:
+                c_scale = "Reds"
             elif "Gol" in chosen_bar_metric or "xG" in chosen_bar_metric or "Serangan" in chosen_bar_metric:
                 c_scale = "OrRd"
             elif "Nilai" in chosen_bar_metric:
@@ -247,7 +432,7 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                 color="Kategori Tim",
                 text="Kode",
                 hover_name="Klub",
-                hover_data=["Indeks Kekuatan", "Total Gol", "Clean Sheet", "Total xG", "Total xGC", "Top Scorer"],
+                hover_data=["Indeks Kekuatan", "Total Gol", "Clean Sheet", "Kebobolan (GC)", "Total xG", "Total xGC", "Top Scorer"],
                 title="Matriks Skor Serangan vs Skor Pertahanan (Garis Pemisah Kuadran Rata-rata Liga)"
             )
             fig_matrix.update_traces(textposition='top center')
@@ -368,19 +553,24 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
             
             club_names = sorted(df_teams['Klub'].unique().tolist())
             
-            # Default selection
-            default_club_idx = 0
-            for idx, cname in enumerate(club_names):
-                if cname in ["Arsenal", "Liverpool", "Manchester City"]:
-                    default_club_idx = idx
-                    break
+            # Default selection synced with row clicks on main table
+            active_club = st.session_state.get('selected_deepdive_club')
+            if active_club in club_names:
+                default_club_idx = club_names.index(active_club)
+            else:
+                default_club_idx = 0
+                for idx, cname in enumerate(club_names):
+                    if cname in ["Arsenal", "Liverpool", "Manchester City"]:
+                        default_club_idx = idx
+                        break
 
             selected_club = st.selectbox(
                 "Pilih Klub Premier League yang Ingin Dianalisis Secara Mendalam:",
                 options=club_names,
                 index=default_club_idx,
-                key="team_deepdive_selector"
+                key=f"team_deepdive_selector_{st.session_state.get('selected_deepdive_club', 'init')}"
             )
+            st.session_state['selected_deepdive_club'] = selected_club
 
             c_info = df_teams[df_teams['Klub'] == selected_club].iloc[0]
             t_id = c_info.get('team_id')
@@ -407,7 +597,7 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
             with dd2:
                 st.metric("Skor Serangan", f"{c_info['Skor Serangan']:.1f}", f"{c_info['Total Gol']} Gol · {c_info['Total xG']:.1f} xG")
             with dd3:
-                st.metric("Skor Pertahanan", f"{c_info['Skor Pertahanan']:.1f}", f"{c_info['Clean Sheet']} CS · {c_info['Total xGC']:.1f} xGC")
+                st.metric("Skor Pertahanan", f"{c_info['Skor Pertahanan']:.1f}", f"{c_info['Clean Sheet']} CS · {c_info.get('Kebobolan (GC)', 0)} GC · {c_info['Total xGC']:.1f} xGC")
             with dd4:
                 st.metric("FDR3 (3 Laga)", f"{c_info['FDR3']:.2f}", f"Lawan: {c_info['Lawan Berikutnya']}")
 
@@ -450,20 +640,45 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "Harga (£m)": st.column_config.NumberColumn(format="£%.1fm"),
-                        "Total Poin": st.column_config.NumberColumn(format="%d pts"),
-                        "xPoin": st.column_config.NumberColumn(format="%.2f pts"),
-                        "Form": st.column_config.NumberColumn(format="%.2f"),
-                        "xG": st.column_config.NumberColumn(format="%.2f"),
-                        "xA": st.column_config.NumberColumn(format="%.2f"),
-                        "Avg Mins (L5M)": st.column_config.NumberColumn(format="%.1f mins"),
-                        "% Ownership": st.column_config.NumberColumn(format="%.1f%%"),
+                        "Nama Pemain": st.column_config.TextColumn("Nama Pemain", pinned=True, width="medium"),
+                        "Posisi": st.column_config.TextColumn("Posisi", width="small"),
+                        "Harga (£m)": st.column_config.NumberColumn("Harga", format="£%.1fm", width="small"),
+                        "Total Poin": st.column_config.NumberColumn("Total Pts", format="%d pts", width="small"),
+                        "xPoin": st.column_config.ProgressColumn(
+                            "xPoin",
+                            min_value=0.0,
+                            max_value=12.0,
+                            format="%.2f",
+                            width="medium",
+                            help="Prediksi poin Gameweek berikutnya."
+                        ),
+                        "Form": st.column_config.ProgressColumn(
+                            "Form",
+                            min_value=0.0,
+                            max_value=12.0,
+                            format="%.1f",
+                            width="medium",
+                            help="Rata-rata poin per laga dalam 30 hari terakhir."
+                        ),
+                        "% Ownership": st.column_config.ProgressColumn(
+                            "Kepemilikan",
+                            min_value=0.0,
+                            max_value=100.0,
+                            format="%.1f%%",
+                            width="medium",
+                            help="Persentase kepemilikan manajer FPL secara global."
+                        ),
                         "Peluang Main GW (%)": st.column_config.ProgressColumn(
-                            "Peluang Main (%)",
+                            "Peluang Main",
                             min_value=0,
                             max_value=100,
-                            format="%d%%"
-                        )
+                            format="%d%%",
+                            width="small"
+                        ),
+                        "xG": st.column_config.NumberColumn("xG", format="%.2f", width="small"),
+                        "xA": st.column_config.NumberColumn("xA", format="%.2f", width="small"),
+                        "Avg Mins (L5M)": st.column_config.NumberColumn("Mins L5M", format="%.0f'", width="small"),
+                        "Status": st.column_config.TextColumn("Status", width="small")
                     }
                 )
             else:
@@ -862,9 +1077,9 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                 # 4. Starting XI Detailed Data Table Expander
                 with st.expander("📋 Lihat Tabel Rincian Statistik Lengkap 11 Pemain Starting XI", expanded=False):
                     xi_table_cols = [
-                        'Nama Pemain', 'Posisi', 'Avg Mins (L5M)', 'Total Poin', 'xPoin', 'Gol', 'Asis', 'xG', 'xA',
-                        'Influence', 'Threat', 'Creativity', 'Defensive Contribution', 'Tackles', 'Clearances', 'Recoveries',
-                        'Harga (£m)', 'Form', '% Ownership'
+                        'Nama Pemain', 'Posisi', 'Harga (£m)', 'Avg Mins (L5M)', 'Total Poin', 'xPoin', 'Form', '% Ownership',
+                        'Gol', 'Asis', 'xG', 'xA', 'Influence', 'Threat', 'Creativity',
+                        'Defensive Contribution', 'Tackles', 'Clearances', 'Recoveries'
                     ]
                     valid_xi_cols = [c for c in xi_table_cols if c in xi_df.columns]
                     st.dataframe(
@@ -872,19 +1087,43 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                         use_container_width=True,
                         hide_index=True,
                         column_config={
-                            "Avg Mins (L5M)": st.column_config.NumberColumn(format="%.1f mins"),
-                            "Total Poin": st.column_config.NumberColumn(format="%d pts"),
-                            "xPoin": st.column_config.NumberColumn(format="%.2f pts"),
-                            "Harga (£m)": st.column_config.NumberColumn(format="£%.1fm"),
-                            "Form": st.column_config.NumberColumn(format="%.2f"),
-                            "xG": st.column_config.NumberColumn(format="%.2f"),
-                            "xA": st.column_config.NumberColumn(format="%.2f"),
-                            "Influence": st.column_config.NumberColumn(format="%.1f"),
-                            "Threat": st.column_config.NumberColumn(format="%.1f"),
-                            "Creativity": st.column_config.NumberColumn(format="%.1f"),
-                            "Defensive Contribution": st.column_config.NumberColumn(format="%.1f"),
-                            "Tackles": st.column_config.NumberColumn(format="%d"),
-                            "% Ownership": st.column_config.NumberColumn(format="%.1f%%")
+                            "Nama Pemain": st.column_config.TextColumn("Nama Pemain", pinned=True, width="medium"),
+                            "Posisi": st.column_config.TextColumn("Posisi", width="small"),
+                            "Harga (£m)": st.column_config.NumberColumn("Harga", format="£%.1fm", width="small"),
+                            "Avg Mins (L5M)": st.column_config.NumberColumn("Mins L5M", format="%.0f'", width="small"),
+                            "Total Poin": st.column_config.NumberColumn("Total Pts", format="%d pts", width="small"),
+                            "xPoin": st.column_config.ProgressColumn(
+                                "xPoin",
+                                min_value=0.0,
+                                max_value=12.0,
+                                format="%.2f",
+                                width="medium"
+                            ),
+                            "Form": st.column_config.ProgressColumn(
+                                "Form",
+                                min_value=0.0,
+                                max_value=12.0,
+                                format="%.1f",
+                                width="medium"
+                            ),
+                            "% Ownership": st.column_config.ProgressColumn(
+                                "Kepemilikan",
+                                min_value=0.0,
+                                max_value=100.0,
+                                format="%.1f%%",
+                                width="medium"
+                            ),
+                            "Gol": st.column_config.NumberColumn("Gol", format="%d", width="small"),
+                            "Asis": st.column_config.NumberColumn("Asis", format="%d", width="small"),
+                            "xG": st.column_config.NumberColumn("xG", format="%.2f", width="small"),
+                            "xA": st.column_config.NumberColumn("xA", format="%.2f", width="small"),
+                            "Influence": st.column_config.NumberColumn("Influence", format="%.1f", width="small"),
+                            "Threat": st.column_config.NumberColumn("Threat", format="%.1f", width="small"),
+                            "Creativity": st.column_config.NumberColumn("Creativity", format="%.1f", width="small"),
+                            "Defensive Contribution": st.column_config.NumberColumn("Def Contrib", format="%.1f", width="small"),
+                            "Tackles": st.column_config.NumberColumn("Tackles", format="%d", width="small"),
+                            "Clearances": st.column_config.NumberColumn("Clearances", format="%d", width="small"),
+                            "Recoveries": st.column_config.NumberColumn("Recoveries", format="%d", width="small")
                         }
                     )
             else:
@@ -1243,25 +1482,41 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
                     use_container_width=True,
                     height=400,
                     column_config={
+                        "Klub": st.column_config.TextColumn("Klub", pinned=True, width="medium"),
+                        "Status Dependensi": st.column_config.TextColumn("Status Dependensi", width="medium"),
+                        "Top Aset FPL": st.column_config.TextColumn("Top Aset FPL", width="medium"),
                         "% Poin Top Player": st.column_config.ProgressColumn(
-                            "% Poin Top Player",
+                            "% Top Asset",
                             min_value=0,
                             max_value=40,
                             format="%.1f%%",
+                            width="medium",
                             help="Persentase total poin tim yang diraih oleh 1 pemain terbaik."
+                        ),
+                        "Indeks Kekuatan": st.column_config.ProgressColumn(
+                            "Indeks Kekuatan",
+                            min_value=0,
+                            max_value=100,
+                            format="%.1f",
+                            width="medium"
                         ),
                         "Std Dev Poin Pemain": st.column_config.NumberColumn(
                             "Std Dev Poin",
                             format="%.2f",
+                            width="small",
                             help="Standar deviasi poin antar pemain aktif (menit > 0)."
                         ),
                         "CV Poin Pemain": st.column_config.NumberColumn(
-                            "CV (Koef. Variasi)",
+                            "CV Variasi",
                             format="%.2f",
+                            width="small",
                             help="Rasio Standar Deviasi terhadap Rata-rata Poin. Mengukur dispersi relatif tanpa bias rata-rata poin tim."
                         ),
-                        "Rata-rata Poin Pemain": st.column_config.NumberColumn(format="%.2f pts"),
-                        "Total Poin Skuad": st.column_config.NumberColumn(format="%d pts")
+                        "Rata-rata Poin Pemain": st.column_config.NumberColumn("Rata2 Pts", format="%.2f pts", width="small"),
+                        "Pemain Aktif": st.column_config.NumberColumn("Aktif", format="%d", width="small"),
+                        "Total Poin Skuad": st.column_config.NumberColumn("Total Pts", format="%d pts", width="small"),
+                        "Top Scorer": st.column_config.TextColumn("Top Scorer", width="medium"),
+                        "Top Creator": st.column_config.TextColumn("Top Creator", width="medium")
                     }
                 )
 

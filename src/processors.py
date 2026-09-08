@@ -154,8 +154,26 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
             def_gk = tp[tp['Posisi'].isin(['DEF', 'GK'])]
             clean_sheets = int(def_gk['Clean Sheet'].max()) if not def_gk.empty else 0
             
-            # Hitung xGC riil tim dari akumulasi xGC kiper yang bermain (atau defender jika kiper kosong)
+            # Hitung aktual kebobolan (Goals Conceded / GC) dari akumulasi kebobolan kiper
             gks = tp[tp['Posisi'].isin(['GK', 'GKP'])]
+            if not gks.empty and 'Kebobolan' in gks.columns:
+                total_gc = int(gks['Kebobolan'].sum())
+            elif not gks.empty and 'goals_conceded' in gks.columns:
+                total_gc = int(gks['goals_conceded'].sum())
+            elif not def_gk.empty and 'Kebobolan' in def_gk.columns:
+                total_gc = int(def_gk['Kebobolan'].max())
+            elif not def_gk.empty and 'goals_conceded' in def_gk.columns:
+                total_gc = int(def_gk['goals_conceded'].max())
+            else:
+                total_gc = 0
+
+            # Fallback ke raw elements jika belum terhitung
+            if total_gc == 0 and _fpl_data and 'elements' in _fpl_data:
+                team_elements = [e for e in _fpl_data['elements'] if e.get('team') == t_id and e.get('element_type') == 1]
+                if team_elements:
+                    total_gc = sum(int(e.get('goals_conceded', 0) or 0) for e in team_elements)
+
+            # Hitung xGC riil tim dari akumulasi xGC kiper yang bermain (atau defender jika kiper kosong)
             gk_xgc = float(pd.to_numeric(gks['xGC'], errors='coerce').fillna(0.0).sum()) if not gks.empty and 'xGC' in gks.columns else 0.0
             if gk_xgc > 0:
                 total_xgc = gk_xgc
@@ -217,6 +235,7 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
             total_xa = 0.0
             total_xgi = 0.0
             clean_sheets = 0
+            total_gc = 0
             total_xgc = 0.0
             total_saves = 0
             avg_form = 0.0
@@ -258,6 +277,8 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
             'Total xA': round(total_xa, 2),
             'Total xGI': round(total_xgi, 2),
             'Clean Sheet': clean_sheets,
+            'Kebobolan': total_gc,
+            'Kebobolan (GC)': total_gc,
             'Total xGC': round(total_xgc, 2),
             'Total Saves': total_saves,
             'Form Rata-rata': round(avg_form, 2),
@@ -292,7 +313,12 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
         return (100.0 - scaled) if invert else scaled
 
     att_score = 0.6 * min_max_scale(df_teams['Total xG']) + 0.4 * min_max_scale(df_teams['Total Gol'])
-    def_score = 0.5 * min_max_scale(df_teams['Clean Sheet']) + 0.5 * min_max_scale(df_teams['Total xGC'], invert=True)
+    # Skor Pertahanan Profesional: 40% Minimalisir xGC (Underlying), 35% Minimalisir Kebobolan Riil (GC), 25% Clean Sheet (Hasil Akhir FPL)
+    def_score = (
+        0.40 * min_max_scale(df_teams['Total xGC'], invert=True) +
+        0.35 * min_max_scale(df_teams['Kebobolan (GC)'], invert=True) +
+        0.25 * min_max_scale(df_teams['Clean Sheet'])
+    )
     pts_score = 0.6 * min_max_scale(df_teams['Rata-rata Poin Pemain']) + 0.4 * min_max_scale(df_teams['Total Poin Skuad'])
     fdr_score = min_max_scale(df_teams['FDR3'], invert=True)
     base_score = min_max_scale(df_teams['Official_Strength'])
@@ -417,6 +443,7 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         goals = int(el.get('goals_scored', 0))
         assists = int(el.get('assists', 0))
         cs = int(el.get('clean_sheets', 0))
+        gc = int(el.get('goals_conceded', 0) or 0)
         pos_id = el.get('element_type', 1)
         pos_name = POSITION_MAP.get(pos_id, "MID")
         
@@ -449,15 +476,17 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             creativity90 = 0.0
 
         tackles = float(el.get('tackles', 0) or 0)
-        interceptions = float(el.get('interceptions', 0) or 0)
-        clearances = float(el.get('clearances_blocks_interceptions', el.get('clearances', 0)) or 0)
+        cbi = float(el.get('clearances_blocks_interceptions', el.get('clearances', 0)) or 0)
+        clearances = cbi
+        interceptions = 0
         recoveries = float(el.get('recoveries', 0) or 0)
         raw_def_contrib = float(el.get('defensive_contribution', 0) or 0)
-        tot_def_actions = (tackles + interceptions + clearances + recoveries) if (tackles + interceptions + clearances + recoveries) > 0 else raw_def_contrib
+        tot_def_actions = (tackles + cbi + recoveries) if (tackles + cbi + recoveries) > 0 else raw_def_contrib
         def_contrib_90 = min(20.0, (tot_def_actions / eff_mins) * 90.0) if mins > 0 else 0.0
         tackles_90 = min(10.0, (tackles / eff_mins) * 90.0) if mins > 0 else 0.0
+        cbi_90 = min(15.0, (cbi / eff_mins) * 90.0) if mins > 0 else 0.0
+        clearances_90 = cbi_90
         recoveries_90 = min(15.0, (recoveries / eff_mins) * 90.0) if mins > 0 else 0.0
-        clearances_90 = min(15.0, (clearances / eff_mins) * 90.0) if mins > 0 else 0.0
 
         # L5M Average Minutes
         avg_mins_l5m = l5m_map.get(el['id'], 0.0)
@@ -538,9 +567,12 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             'Threat': threat,
             'Tackles': int(tackles),
             'Tackles per 90': round(tackles_90, 2),
+            'CBI': int(cbi),
+            'CBI per 90': round(cbi_90, 2),
             'Interceptions': int(interceptions),
             'Clearances': int(clearances),
             'Recoveries': int(recoveries),
+            'Recoveries per 90': round(recoveries_90, 2),
             'Defensive Contribution': round(tot_def_actions, 1),
             'BPS': bps,
             'Bonus Poin': bonus,
@@ -554,6 +586,8 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             'Gol': goals,
             'Asis': assists,
             'Clean Sheet': cs,
+            'Kebobolan': gc,
+            'goals_conceded': gc,
             'Penalti Order': format_setpiece_order(pen_order),
             'Free Kick Order': format_setpiece_order(fk_order),
             'Corner Order': format_setpiece_order(corner_order),
@@ -750,12 +784,12 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         'xGC per 90', 'Saves per 90', 'Defensive Contribution per 90',
         'ICT Index', 'Influence', 'Creativity', 'Threat',
         'influence_per_90', 'creativity_per_90', 'threat_per_90',
-        'Tackles', 'Tackles per 90', 'Clearances', 'Recoveries', 'Interceptions',
+        'Tackles', 'Tackles per 90', 'CBI', 'CBI per 90', 'Clearances', 'Recoveries', 'Recoveries per 90', 'Interceptions',
         'Defensive Contribution',
         'BPS', 'Bonus Poin', 'Kartu Kuning', 'Kartu Merah', 'Saves',
         'Penalti Order', 'Free Kick Order', 'Corner Order', 'Status',
         'Peluang Main GW (%)', 'Berita Cedera', 'Menit Bermain', 'Gol', 'Asis',
-        'Clean Sheet', 'Nama Lengkap', 'Poin per £m', 'xPoin per £m', 'Kemudahan Jadwal'
+        'Clean Sheet', 'Kebobolan', 'goals_conceded', 'Nama Lengkap', 'Poin per £m', 'xPoin per £m', 'Kemudahan Jadwal'
     ]
     
     return df[cols], team_dict
