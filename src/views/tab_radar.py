@@ -52,6 +52,7 @@ METRIC_META = {
     'Threat': {'label': 'Threat Score', 'category': 'Ofensif', 'higher_better': True, 'fmt': '{:.1f}'},
     'Tackles': {'label': 'Tackles', 'category': 'Defensif', 'higher_better': True, 'fmt': '{:.0f}'},
     'Tackles per 90': {'label': 'Tackles / 90 Mins', 'category': 'Defensif', 'higher_better': True, 'fmt': '{:.2f}'},
+    'CBI': {'label': 'CBI (Clear/Block/Intc)', 'category': 'Defensif', 'higher_better': True, 'fmt': '{:.0f}'},
     'Clearances': {'label': 'Clearances & Blocks', 'category': 'Defensif', 'higher_better': True, 'fmt': '{:.0f}'},
     'Recoveries': {'label': 'Ball Recoveries', 'category': 'Defensif', 'higher_better': True, 'fmt': '{:.0f}'},
     'Defensive Contribution': {'label': 'Defensive Contrib', 'category': 'Defensif', 'higher_better': True, 'fmt': '{:.1f}'},
