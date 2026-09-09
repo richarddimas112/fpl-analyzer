@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from scipy.stats import percentileofscore
+from src.processors import get_team_short_map
 
 SHORT_CLUB_NAMES = {
     'Arsenal': 'ARS', 'Aston Villa': 'AVL', 'Bournemouth': 'BOU', 'Brentford': 'BRE',
@@ -239,6 +240,9 @@ def render_player_comparison_radar_tab(df, fpl_data, teams_dict, fdr_summary=Non
     if df.empty or len(df) < 2:
         st.warning("Data pemain tidak mencukupi untuk melakukan komparasi.")
         return
+
+    # Extract official short club names directly from FPL API
+    club_short_map = get_team_short_map(fpl_data) if fpl_data else SHORT_CLUB_NAMES
 
     # Build player lookup list
     player_records = df.to_dict('records')
@@ -803,8 +807,8 @@ def render_player_comparison_radar_tab(df, fpl_data, teams_dict, fdr_summary=Non
                 m1 = p1_fxs[i] if i < len(p1_fxs) else {}
                 m2 = p2_fxs[i] if i < len(p2_fxs) else {}
 
-                o1_short = SHORT_CLUB_NAMES.get(m1.get('opp_name', ''), m1.get('opp_name', '-')[:3].upper())
-                o2_short = SHORT_CLUB_NAMES.get(m2.get('opp_name', ''), m2.get('opp_name', '-')[:3].upper())
+                o1_short = m1.get('opp_short') or club_short_map.get(m1.get('opp_id')) or club_short_map.get(m1.get('opp_name', ''), m1.get('opp_name', '-')[:3].upper())
+                o2_short = m2.get('opp_short') or club_short_map.get(m2.get('opp_id')) or club_short_map.get(m2.get('opp_name', ''), m2.get('opp_name', '-')[:3].upper())
                 ha1 = 'H' if m1.get('is_home') == 1 else 'A'
                 ha2 = 'H' if m2.get('is_home') == 1 else 'A'
                 d1 = int(m1.get('fdr', 3)) if m1.get('fdr') is not None else 3
