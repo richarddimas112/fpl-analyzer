@@ -5,6 +5,7 @@ Ultra-polished, responsive Fixture Matrix, Interactive Ticker, and Swing Insight
 
 import pandas as pd
 import streamlit as st
+from src.processors import get_team_short_map
 
 SHORT_CLUB_NAMES = {
     'Arsenal': 'ARS', 'Aston Villa': 'AVL', 'Bournemouth': 'BOU', 'Brentford': 'BRE',
@@ -26,10 +27,12 @@ FDR_PALETTE = {
     5: {'bg': '#ef4444', 'text': '#ffffff', 'label': 'Sangat Sulit', 'dot': '🔴'},
 }
 
-def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary):
+def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None):
     """
     Renders Fixtures, Schedule and Fixture Difficulty Rating (FDR) Matrix & Ticker.
     """
+    # Dynamic short club names extracted directly from FPL API
+    club_short_map = get_team_short_map(fpl_data) if fpl_data else SHORT_CLUB_NAMES
     # Header Banner Card
     st.markdown("""
     <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); border-radius: 12px; padding: 20px 24px; color: #ffffff; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);">
@@ -164,7 +167,7 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary):
             if idx < len(up10):
                 m = up10[idx]
                 opp = m.get('opp_name', 'TBD')
-                opp_short = SHORT_CLUB_NAMES.get(opp, opp[:3].upper())
+                opp_short = m.get('opp_short') or club_short_map.get(m.get('opp_id')) or club_short_map.get(opp, opp[:3].upper())
                 ha = "H" if m.get('is_home') == 1 else "A"
                 if ha == "H":
                     home_count_10 += 1
@@ -194,7 +197,7 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary):
         raw_matrix_items.append({
             't_id': t_id,
             'club': t_name,
-            'short_name': SHORT_CLUB_NAMES.get(t_name, t_name[:3].upper()),
+            'short_name': club_short_map.get(t_id) or club_short_map.get(t_name, t_name[:3].upper()),
             'fdr1': fdr1_val,
             'fdr3': fdr3_val,
             'fdr5': fdr5_val,
