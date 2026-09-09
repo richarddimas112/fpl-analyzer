@@ -11,18 +11,6 @@ import plotly.graph_objects as go
 from scipy.stats import percentileofscore
 from src.processors import get_team_short_map
 
-SHORT_CLUB_NAMES = {
-    'Arsenal': 'ARS', 'Aston Villa': 'AVL', 'Bournemouth': 'BOU', 'Brentford': 'BRE',
-    'Brighton': 'BHA', 'Brighton and Hove Albion': 'BHA', 'Chelsea': 'CHE', 'Crystal Palace': 'CRY',
-    'Everton': 'EVE', 'Fulham': 'FUL', 'Ipswich': 'IPS', 'Ipswich Town': 'IPS', 'Leicester': 'LEI',
-    'Leicester City': 'LEI', 'Liverpool': 'LIV', 'Man City': 'MCI', 'Manchester City': 'MCI',
-    'Man Utd': 'MUN', 'Manchester Utd': 'MUN', 'Manchester United': 'MUN', 'Newcastle': 'NEW',
-    'Newcastle United': 'NEW', "Nott'm Forest": 'NFO', 'Nottingham Forest': 'NFO',
-    'Southampton': 'SOU', 'Spurs': 'TOT', 'Tottenham': 'TOT', 'Tottenham Hotspur': 'TOT',
-    'West Ham': 'WHU', 'West Ham United': 'WHU', 'Wolves': 'WOL', 'Wolverhampton': 'WOL',
-    'Wolverhampton Wanderers': 'WOL'
-}
-
 FDR_PALETTE = {
     1: {'bg': '#15803d', 'text': '#ffffff'},
     2: {'bg': '#10b981', 'text': '#ffffff'},
@@ -242,7 +230,7 @@ def render_player_comparison_radar_tab(df, fpl_data, teams_dict, fdr_summary=Non
         return
 
     # Extract official short club names directly from FPL API
-    club_short_map = get_team_short_map(fpl_data) if fpl_data else SHORT_CLUB_NAMES
+    club_short_map = get_team_short_map(fpl_data)
 
     # Build player lookup list
     player_records = df.to_dict('records')
