@@ -44,8 +44,25 @@ def format_setpiece_order(val):
     except Exception:
         return str(val)
 
+def get_team_short_map(fpl_data):
+    """
+    Extracts official 3-letter club short names directly from FPL API teams data.
+    Returns a dictionary mapping both team ID and full team name to official short_name.
+    """
+    if not fpl_data or 'teams' not in fpl_data:
+        return {}
+    
+    mapping = {}
+    for t in fpl_data.get('teams', []):
+        s_name = t.get('short_name', '')
+        if s_name:
+            mapping[t.get('id')] = s_name
+            mapping[str(t.get('id'))] = s_name
+            mapping[t.get('name')] = s_name
+    return mapping
+
 @st.cache_data(ttl=86400)
-def calculate_team_fdrs(fixtures, teams_dict):
+def calculate_team_fdrs(fixtures, teams_dict, teams_short_dict=None):
     """Calculate FDR1, FDR3, FDR5 and next match home status & opponent info for every team."""
     team_upcoming = {t_id: [] for t_id in teams_dict.keys()}
     
@@ -81,17 +98,20 @@ def calculate_team_fdrs(fixtures, teams_dict):
             next_opp_id = None
 
         opp_name = teams_dict.get(next_opp_id, 'TBD') if next_opp_id else 'TBD'
+        opp_short = (teams_short_dict.get(next_opp_id) if teams_short_dict else None) or (teams_dict.get(next_opp_id, '')[:3].upper() if next_opp_id else 'TBD')
         opp_fmt = f"{opp_name} ({'🏠' if next_is_home == 1 else '✈️'})" if next_opp_id else "-"
         
         upcoming_10 = []
         for x in fxs[:10]:
             o_id = x.get('opp_id')
             o_name = teams_dict.get(o_id, f"Team {o_id}")
+            o_short = (teams_short_dict.get(o_id) if teams_short_dict else None) or teams_dict.get(o_id, '')[:3].upper()
             o_home = x.get('is_home') == 1
             upcoming_10.append({
                 'gw': x.get('gw'),
                 'opp_id': o_id,
                 'opp_name': o_name,
+                'opp_short': o_short,
                 'is_home': x.get('is_home'),
                 'fdr': x.get('fdr'),
                 'label': f"{o_name} ({'H' if o_home else 'A'}) [{x.get('fdr')}]"
@@ -105,6 +125,7 @@ def calculate_team_fdrs(fixtures, teams_dict):
             'Next_Is_Home': next_is_home,
             'Next_Opponent_ID': next_opp_id,
             'Next_Opponent_Name': opp_name,
+            'Next_Opponent_Short': opp_short,
             'Next_Opponent_Fmt': opp_fmt,
             'upcoming_10': upcoming_10
         }
