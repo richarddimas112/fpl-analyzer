@@ -2,9 +2,10 @@ streamlit
 pandas
 numpy
 plotly
-statsmodels
 scipy
 scikit-learn
-requests
-matplotlib
+statsmodels
+xgboost
 seaborn
+matplotlib
+requests

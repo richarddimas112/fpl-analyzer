@@ -9,6 +9,13 @@ import textwrap
 import plotly.express as px
 import plotly.graph_objects as go
 from src.processors import calculate_team_strength_analysis
+from src.api import (
+    get_football_data_api_key,
+    get_football_data_team_id,
+    fetch_football_data_upcoming_matches,
+    format_utc_to_wib,
+    get_competition_label,
+)
 
 def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=None, teams_dict=None):
     """
@@ -1272,48 +1279,138 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
 
             st.markdown("---")
 
-            # 2. UPCOMING FIXTURES TABLE FOR THIS CLUB
+            # 2. UPCOMING FIXTURES TABLE FOR THIS CLUB (MULTI-COMPETITION FOOTBALL-DATA.ORG + FPL FALLBACK)
             st.markdown(f"##### 📅 Jadwal Pertandingan Mendatang: **{selected_club}**")
             
-            club_fixtures_list = []
-            if raw_fixtures and t_id is not None:
-                for fx in raw_fixtures:
-                    is_played = bool(fx.get('finished') or fx.get('finished_provisional') or fx.get('started'))
-                    if not is_played:
-                        h_id = fx.get('team_h')
-                        a_id = fx.get('team_a')
-                        if h_id == t_id or a_id == t_id:
-                            is_home = (h_id == t_id)
-                            opp_id = a_id if is_home else h_id
-                            opp_name = club_t_map.get(opp_id, f"Team {opp_id}")
-                            diff = fx.get('team_h_difficulty') if is_home else fx.get('team_a_difficulty')
-                            kickoff = fx.get('kickoff_time', '')
-                            kickoff_str = kickoff[:10] if kickoff else '-'
+            fb_team_id = get_football_data_team_id(selected_club)
+            fb_matches = None
+            err_code = None
+            
+            if fb_team_id:
+                fb_matches, err_code = fetch_football_data_upcoming_matches(fb_team_id)
 
-                            club_fixtures_list.append({
-                                'Gameweek': f"GW {fx.get('event', '-')}",
-                                'Lawan': opp_name,
-                                'Lokasi': '🏠 Kandang (Home)' if is_home else '✈️ Tandang (Away)',
-                                'FDR (Tingkat Kesulitan)': diff if diff is not None else 3,
-                                'Tanggal Kickoff': kickoff_str
-                            })
+            # Jika data jadwal lintas kompetisi dari football-data.org tersedia
+            if fb_matches and isinstance(fb_matches, list) and len(fb_matches) > 0:
+                multi_fixtures_list = []
+                for m in fb_matches:
+                    comp_dict = m.get('competition', {})
+                    comp_label = get_competition_label(comp_dict)
+                    comp_code = comp_dict.get('code', '')
+                    kickoff_wib = format_utc_to_wib(m.get('utcDate'))
+                    
+                    home_team = m.get('homeTeam', {})
+                    away_team = m.get('awayTeam', {})
+                    is_home = (home_team.get('id') == fb_team_id)
+                    opp_obj = away_team if is_home else home_team
+                    opp_name = opp_obj.get('shortName') or opp_obj.get('name', 'Lawan')
+                    
+                    stage_raw = m.get('stage', '')
+                    matchday = m.get('matchday')
+                    if matchday:
+                        round_str = f"Matchday {matchday}" if comp_code != 'PL' else f"GW {matchday}"
+                    elif stage_raw:
+                        round_str = stage_raw.replace('_', ' ').title()
+                    else:
+                        round_str = "-"
+                    
+                    # Hubungkan FDR jika merupakan pertandingan Premier League
+                    fdr_val = None
+                    if comp_code == 'PL' or 'Premier League' in comp_dict.get('name', ''):
+                        if raw_fixtures and t_id is not None:
+                            for fx in raw_fixtures:
+                                is_played = bool(fx.get('finished') or fx.get('finished_provisional') or fx.get('started'))
+                                if not is_played:
+                                    h_id = fx.get('team_h')
+                                    a_id = fx.get('team_a')
+                                    if (h_id == t_id and is_home) or (a_id == t_id and not is_home):
+                                        fdr_val = fx.get('team_h_difficulty') if is_home else fx.get('team_a_difficulty')
+                                        break
+                    
+                    info_diff = f"FDR {fdr_val}" if fdr_val is not None else ("⭐ Kompetisi UEFA" if "Champions" in comp_label or "Europa" in comp_label or "Conference" in comp_label else "🏆 Kompetisi Piala")
 
-            if club_fixtures_list:
-                df_club_fix = pd.DataFrame(club_fixtures_list).head(6)
+                    multi_fixtures_list.append({
+                        'Kompetisi': comp_label,
+                        'Tanggal Kickoff (WIB)': kickoff_wib,
+                        'Lawan': opp_name,
+                        'Lokasi': '🏠 Kandang (Home)' if is_home else '✈️ Tandang (Away)',
+                        'Babak / Ronde': round_str,
+                        'Tingkat Kesulitan / Info': info_diff,
+                    })
+
+                df_multi_fix = pd.DataFrame(multi_fixtures_list)
+                
+                # Filter Kompetisi jika ada ragam kompetisi
+                all_comps = ["Semua Kompetisi"] + sorted(list(df_multi_fix['Kompetisi'].unique()))
+                
+                col_info, col_filter = st.columns([3, 2])
+                with col_info:
+                    st.caption(f"🌐 *Football-Data.org Aktif: Memuat {len(df_multi_fix)} jadwal mendatang di seluruh kompetisi untuk **{selected_club}**.*")
+                with col_filter:
+                    if len(all_comps) > 2:
+                        sel_comp = st.selectbox("Filter Kompetisi:", options=all_comps, key=f"filter_comp_{selected_club}", label_visibility="collapsed")
+                        if sel_comp != "Semua Kompetisi":
+                            df_multi_fix = df_multi_fix[df_multi_fix['Kompetisi'] == sel_comp]
+
                 st.dataframe(
-                    df_club_fix,
+                    df_multi_fix.head(10),
                     use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "FDR (Tingkat Kesulitan)": st.column_config.NumberColumn(
-                            "FDR (1-5)",
-                            help="Skala 1 (Sangat Mudah) hingga 5 (Sangat Sulit)",
-                            format="%d"
-                        )
-                    }
+                    hide_index=True
                 )
             else:
-                st.info(f"Jadwal mendatang untuk {selected_club}: Lawan terdekat adalah {c_info.get('Lawan Berikutnya', '-')}")
+                # Keterangan status football-data.org jika tidak memuat multi-kompetisi
+                if err_code == "NO_TOKEN":
+                    st.caption(
+                        "ℹ️ *Menampilkan jadwal resmi Premier League (FPL). Untuk memuat seluruh jadwal kompetisi "
+                        "(termasuk UEFA Champions League, FA Cup, Carabao Cup) dari Football-Data.org, "
+                        "konfigurasikan API Token `FOOTBALL_DATA_API_KEY` pada Settings / Secrets.*"
+                    )
+                elif err_code == "403_FORBIDDEN":
+                    st.warning("⚠️ *API Token Football-Data.org merespon 403 Forbidden (Periksa validitas X-Auth-Token Anda). Menampilkan jadwal Premier League dari FPL sebagai fallback.*")
+                elif err_code == "429_RATE_LIMIT":
+                    st.warning("⏳ *Batas request Football-Data.org (10 call/menit) tercapai. Menampilkan jadwal Premier League dari FPL sebagai fallback.*")
+                elif err_code:
+                    st.caption(f"ℹ️ *Football-Data.org status: {err_code}. Menampilkan jadwal Premier League dari FPL:*")
+
+                club_fixtures_list = []
+                if raw_fixtures and t_id is not None:
+                    for fx in raw_fixtures:
+                        is_played = bool(fx.get('finished') or fx.get('finished_provisional') or fx.get('started'))
+                        if not is_played:
+                            h_id = fx.get('team_h')
+                            a_id = fx.get('team_a')
+                            if h_id == t_id or a_id == t_id:
+                                is_home = (h_id == t_id)
+                                opp_id = a_id if is_home else h_id
+                                opp_name = club_t_map.get(opp_id, f"Team {opp_id}")
+                                diff = fx.get('team_h_difficulty') if is_home else fx.get('team_a_difficulty')
+                                kickoff = fx.get('kickoff_time', '')
+                                kickoff_str = kickoff[:10] if kickoff else '-'
+
+                                club_fixtures_list.append({
+                                    'Kompetisi': '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League',
+                                    'Gameweek': f"GW {fx.get('event', '-')}",
+                                    'Lawan': opp_name,
+                                    'Lokasi': '🏠 Kandang (Home)' if is_home else '✈️ Tandang (Away)',
+                                    'FDR (Tingkat Kesulitan)': diff if diff is not None else 3,
+                                    'Tanggal Kickoff': kickoff_str
+                                })
+
+                if club_fixtures_list:
+                    df_club_fix = pd.DataFrame(club_fixtures_list).head(6)
+                    st.dataframe(
+                        df_club_fix,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "FDR (Tingkat Kesulitan)": st.column_config.NumberColumn(
+                                "FDR (1-5)",
+                                help="Skala 1 (Sangat Mudah) hingga 5 (Sangat Sulit)",
+                                format="%d"
+                            )
+                        }
+                    )
+                else:
+                    st.info(f"Jadwal mendatang untuk {selected_club}: Lawan terdekat adalah {c_info.get('Lawan Berikutnya', '-')}")
 
         # TAB 5: DISPERSION & SINGLE-PLAYER DEPENDENCY ANALYSIS (ONE-MAN TEAM)
         with v_tab5:
