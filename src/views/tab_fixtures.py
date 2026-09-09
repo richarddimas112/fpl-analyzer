@@ -7,18 +7,6 @@ import pandas as pd
 import streamlit as st
 from src.processors import get_team_short_map
 
-SHORT_CLUB_NAMES = {
-    'Arsenal': 'ARS', 'Aston Villa': 'AVL', 'Bournemouth': 'BOU', 'Brentford': 'BRE',
-    'Brighton': 'BHA', 'Brighton and Hove Albion': 'BHA', 'Chelsea': 'CHE', 'Crystal Palace': 'CRY',
-    'Everton': 'EVE', 'Fulham': 'FUL', 'Ipswich': 'IPS', 'Ipswich Town': 'IPS', 'Leicester': 'LEI',
-    'Leicester City': 'LEI', 'Liverpool': 'LIV', 'Man City': 'MCI', 'Manchester City': 'MCI',
-    'Man Utd': 'MUN', 'Manchester Utd': 'MUN', 'Manchester United': 'MUN', 'Newcastle': 'NEW',
-    'Newcastle United': 'NEW', "Nott'm Forest": 'NFO', 'Nottingham Forest': 'NFO',
-    'Southampton': 'SOU', 'Spurs': 'TOT', 'Tottenham': 'TOT', 'Tottenham Hotspur': 'TOT',
-    'West Ham': 'WHU', 'West Ham United': 'WHU', 'Wolves': 'WOL', 'Wolverhampton': 'WOL',
-    'Wolverhampton Wanderers': 'WOL'
-}
-
 FDR_PALETTE = {
     1: {'bg': '#15803d', 'text': '#ffffff', 'label': 'Sangat Mudah', 'dot': '🟢'},
     2: {'bg': '#10b981', 'text': '#ffffff', 'label': 'Mudah', 'dot': '🟢'},
@@ -32,7 +20,7 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None):
     Renders Fixtures, Schedule and Fixture Difficulty Rating (FDR) Matrix & Ticker.
     """
     # Dynamic short club names extracted directly from FPL API
-    club_short_map = get_team_short_map(fpl_data) if fpl_data else SHORT_CLUB_NAMES
+    club_short_map = get_team_short_map(fpl_data)
     # Header Banner Card
     st.markdown("""
     <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); border-radius: 12px; padding: 20px 24px; color: #ffffff; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);">
