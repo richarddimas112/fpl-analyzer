@@ -357,9 +357,10 @@ def main():
         return
 
     teams_dict = {t['id']: t['name'] for t in fpl_data.get('teams', [])}
+    teams_short_dict = {t['id']: t.get('short_name', t['name'][:3].upper()) for t in fpl_data.get('teams', [])}
     
-    # Calculate FDRs
-    fdr_summary = calculate_team_fdrs(fixtures_data, teams_dict)
+    # Calculate FDRs with official team short names
+    fdr_summary = calculate_team_fdrs(fixtures_data, teams_dict, teams_short_dict=teams_short_dict)
     
     # Deteksi GW saat ini dan Load Histori Musim Lalu
     current_gw = get_current_gw(fpl_data)
@@ -478,6 +479,9 @@ def main():
     # Pre-fetch Option C data for multi-option comparison (cached)
     df_opt_c, _ = build_option_c_model_and_view(fpl_data, fdr_summary, current_gw)
 
+    # Calculate comprehensive team strength analysis once for shared use
+    df_teams = calculate_team_strength_analysis(fpl_data, players_df, fdr_summary)
+
     def render_content_by_id(mod_id):
         if mod_id == "player_stats":
             render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data, teams_dict, fdr_summary=fdr_summary)
@@ -495,7 +499,7 @@ def main():
         elif mod_id == "team_strength":
             render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data, teams_dict)
         elif mod_id == "fixtures":
-            render_tab_fixtures(fixtures_data, teams_dict, fdr_summary)
+            render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=fpl_data, df_teams=df_teams)
 
     # Modern Navigation Hub (Eliminates horizontal scrolling, supports Category pills, Wrap Grid, and Classical Auto-wrap tabs)
     active_nav_id = render_navigation_bar()
