@@ -499,7 +499,7 @@ def main():
         elif mod_id == "team_strength":
             render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data, teams_dict)
         elif mod_id == "fixtures":
-            render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=fpl_data, df_teams=df_teams)
+            render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=fpl_data, df_teams=df_teams, players_df=players_df)
 
     # Modern Navigation Hub (Eliminates horizontal scrolling, supports Category pills, Wrap Grid, and Classical Auto-wrap tabs)
     active_nav_id = render_navigation_bar()
