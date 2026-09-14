@@ -70,7 +70,237 @@ def get_diff_pill_html(diff_val, label):
         f"</div>"
     )
 
-def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, df_teams=None):
+@st.dialog("🏟️ Profil Klub & Analisis Skuad FPL", width="large")
+def show_club_profile_dialog(
+    initial_club,
+    match_opp_club=None,
+    all_club_names=None,
+    df_teams=None,
+    players_df=None,
+    fdr_summary=None,
+    teams_dict=None,
+    club_short_map=None
+):
+    """
+    Pop-up dialog modal untuk melihat profil lengkap klub, metrik kekuatan, top 5 aset FPL,
+    dan jadwal pertandingan mendatang tanpa berpindah tab/halaman.
+    Pengguna dapat dengan mudah beralih melihat klub lain langsung di dalam dialog ini.
+    """
+    if all_club_names is None and df_teams is not None and not df_teams.empty:
+        all_club_names = sorted(df_teams['Klub'].unique().tolist())
+    elif all_club_names is None:
+        all_club_names = []
+
+    # Reset active modal club jika dialog dipanggil untuk klub awal yang berbeda
+    if st.session_state.get('dlg_last_initial') != initial_club:
+        st.session_state['dlg_last_initial'] = initial_club
+        st.session_state['dlg_modal_club'] = initial_club
+
+    curr_club = st.session_state.get('dlg_modal_club', initial_club)
+    if curr_club not in all_club_names and all_club_names:
+        curr_club = all_club_names[0]
+        st.session_state['dlg_modal_club'] = curr_club
+
+    # 1. Bar Pengalih Klub (Switcher) yang Sangat Mudah Digunakan
+    st.markdown("""
+    <div style="font-size: 0.8rem; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;">
+        🔄 Beralih Melihat Profil Klub:
+    </div>
+    """, unsafe_allow_html=True)
+
+    if match_opp_club and match_opp_club in all_club_names:
+        sw_col1, sw_col2, sw_col3 = st.columns([1.1, 1.1, 2.6])
+        with sw_col1:
+            h_is_active = curr_club == initial_club
+            if st.button(f"🏠 {initial_club}", key=f"dlg_btn_h_{initial_club}", type="primary" if h_is_active else "secondary", use_container_width=True):
+                st.session_state['dlg_modal_club'] = initial_club
+                st.rerun()
+        with sw_col2:
+            a_is_active = curr_club == match_opp_club
+            if st.button(f"✈️ {match_opp_club}", key=f"dlg_btn_a_{match_opp_club}", type="primary" if a_is_active else "secondary", use_container_width=True):
+                st.session_state['dlg_modal_club'] = match_opp_club
+                st.rerun()
+        with sw_col3:
+            curr_idx = all_club_names.index(curr_club) if curr_club in all_club_names else 0
+            chosen_club = st.selectbox(
+                "Pilih Klub Lain (20 Klub PL):",
+                options=all_club_names,
+                index=curr_idx,
+                key=f"dlg_sel_box_{curr_club}",
+                label_visibility="collapsed"
+            )
+            if chosen_club != curr_club:
+                st.session_state['dlg_modal_club'] = chosen_club
+                st.rerun()
+    else:
+        curr_idx = all_club_names.index(curr_club) if curr_club in all_club_names else 0
+        chosen_club = st.selectbox(
+            "Pilih Klub Premier League (20 Klub PL):",
+            options=all_club_names,
+            index=curr_idx,
+            key=f"dlg_sel_box_{curr_club}"
+        )
+        if chosen_club != curr_club:
+            st.session_state['dlg_modal_club'] = chosen_club
+            st.rerun()
+
+    # 2. Ambil Statistik Klub dari df_teams
+    c_info = None
+    if df_teams is not None and not df_teams.empty:
+        c_match = df_teams[df_teams['Klub'] == curr_club]
+        if not c_match.empty:
+            c_info = c_match.iloc[0]
+
+    if c_info is not None:
+        t_id = c_info.get('team_id')
+        code = c_info.get('Kode', curr_club[:3].upper())
+        kategori = c_info.get('Kategori Tim', 'Premier League')
+        indeks = c_info.get('Indeks Kekuatan', 50.0)
+        lawan_gw = c_info.get('Lawan Berikutnya', '-')
+        fdr1_val = c_info.get('FDR1', 3.0)
+        skor_att = c_info.get('Skor Serangan', 50.0)
+        skor_def = c_info.get('Skor Pertahanan', 50.0)
+        total_gol = c_info.get('Total Gol', 0)
+        total_xg = c_info.get('Total xG', 0.0)
+        clean_sheet = c_info.get('Clean Sheet', 0)
+        gc_val = c_info.get('Kebobolan (GC)', 0)
+        total_saves = c_info.get('Total Saves', 0)
+        total_pts = c_info.get('Total Poin Skuad', 0)
+        avg_pts = c_info.get('Rata-rata Poin Pemain', 0.0)
+        squad_val = c_info.get('Nilai Skuad (£m)', 0.0)
+        fdr3_val = c_info.get('FDR3', 3.0)
+        top_scorer = c_info.get('Top Scorer', '-')
+        top_creator = c_info.get('Top Creator', '-')
+        top_fpl = c_info.get('Top Aset FPL', '-')
+
+        # Club Badge Header Card
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); border-radius: 10px; padding: 14px 18px; color: #ffffff; margin: 10px 0 14px 0; border-left: 5px solid #2563eb; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <div>
+                <div style="font-size: 1.3rem; font-weight: 800; color: #ffffff; letter-spacing: -0.01em;">{curr_club} ({code})</div>
+                <div style="font-size: 0.82rem; color: #94a3b8; margin-top: 3px;">
+                    Kategori: <b style="color: #60a5fa;">{kategori}</b> &nbsp;·&nbsp; Lawan GW Berikutnya: <b style="color: #f1f5f9;">{lawan_gw}</b> (FDR {fdr1_val})
+                </div>
+            </div>
+            <div style="background: rgba(37, 99, 235, 0.25); border: 1px solid rgba(96, 165, 250, 0.5); padding: 6px 14px; border-radius: 18px; font-weight: 700; font-size: 0.92rem; color: #93c5fd;">
+                Indeks Kekuatan: {indeks:.1f}/100
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # 4 Metrik Ringkasan Klub
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Skor Serangan", f"{skor_att:.1f}", f"{total_gol} Gol · {total_xg:.1f} xG")
+        with m2:
+            st.metric("Skor Pertahanan", f"{skor_def:.1f}", f"{clean_sheet} CS · {gc_val} GC · {total_saves} Sv")
+        with m3:
+            st.metric("Total Poin Skuad", f"{total_pts} pts", f"Avg: {avg_pts:.1f} pts")
+        with m4:
+            st.metric("Nilai Skuad (£m)", f"£{squad_val:.1f}m", f"FDR 3 Laga: {fdr3_val:.2f}")
+
+        # 3. Top 5 Aset Utama FPL Klub Ini
+        if players_df is not None and not players_df.empty:
+            if 'team' in players_df.columns and t_id is not None:
+                club_players = players_df[players_df['team'] == t_id].copy()
+            elif 'Klub' in players_df.columns:
+                club_players = players_df[players_df['Klub'] == curr_club].copy()
+            else:
+                club_players = pd.DataFrame()
+        else:
+            club_players = pd.DataFrame()
+
+        if not club_players.empty:
+            st.markdown(f"###### ⭐ Top 5 Aset Utama FPL: **{curr_club}**")
+            top_5_assets = club_players.sort_values(by=['Total Poin', 'xPoin'], ascending=False).head(5)
+
+            top_asset_cols = [
+                'Nama Pemain', 'Posisi', 'Harga (£m)', 'Total Poin', 'xPoin', 'Form',
+                'Avg Mins (L5M)', '% Ownership', 'Peluang Main GW (%)', 'Status'
+            ]
+            valid_cols = [c for c in top_asset_cols if c in top_5_assets.columns]
+
+            st.dataframe(
+                top_5_assets[valid_cols],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Nama Pemain": st.column_config.TextColumn("Nama Pemain", pinned=True, width="medium"),
+                    "Posisi": st.column_config.TextColumn("Posisi", width="small"),
+                    "Harga (£m)": st.column_config.NumberColumn("Harga", format="£%.1fm", width="small"),
+                    "Total Poin": st.column_config.NumberColumn("Total Pts", format="%d pts", width="small"),
+                    "xPoin": st.column_config.ProgressColumn(
+                        "xPoin",
+                        min_value=0.0,
+                        max_value=12.0,
+                        format="%.2f",
+                        width="medium",
+                        help="Prediksi poin Gameweek berikutnya."
+                    ),
+                    "Form": st.column_config.ProgressColumn(
+                        "Form",
+                        min_value=0.0,
+                        max_value=12.0,
+                        format="%.1f",
+                        width="medium",
+                        help="Rata-rata poin per laga dalam 30 hari terakhir."
+                    ),
+                    "% Ownership": st.column_config.ProgressColumn(
+                        "Kepemilikan",
+                        min_value=0.0,
+                        max_value=100.0,
+                        format="%.1f%%",
+                        width="medium"
+                    ),
+                    "Peluang Main GW (%)": st.column_config.ProgressColumn(
+                        "Peluang Main",
+                        min_value=0,
+                        max_value=100,
+                        format="%d%%",
+                        width="small"
+                    ),
+                    "Avg Mins (L5M)": st.column_config.NumberColumn("Mins L5M", format="%.0f'", width="small"),
+                    "Status": st.column_config.TextColumn("Status", width="small")
+                }
+            )
+
+            st.caption(f"💡 **Top Scorer:** {top_scorer} &nbsp;·&nbsp; **Top Creator:** {top_creator} &nbsp;·&nbsp; **Talisman Utama:** {top_fpl}")
+
+        # 4. Jadwal 5 Pertandingan Mendatang & FDR
+        if fdr_summary and t_id in fdr_summary:
+            t_fdr = fdr_summary.get(t_id, {})
+            up5 = t_fdr.get('upcoming_10', [])[:5]
+            if up5:
+                st.markdown("###### 🗓️ Jadwal 5 Laga Mendatang & Tingkat Kesulitan (FDR)")
+                f_cols = st.columns(len(up5))
+                for i, m in enumerate(up5):
+                    fdr_val = m.get('fdr', m.get('difficulty', 3))
+                    fdr_cfg = FDR_PALETTE.get(fdr_val, FDR_PALETTE[3])
+                    opp_id = m.get('opp_id', m.get('opponent_id'))
+                    opp_name = teams_dict.get(opp_id, 'TBD') if teams_dict else 'TBD'
+                    opp_code = club_short_map.get(opp_id) or club_short_map.get(opp_name, opp_name[:3].upper()) if club_short_map else opp_name[:3].upper()
+                    ha = "H" if m.get('is_home') == 1 else "A"
+                    gw_label = f"GW {m.get('gw', i+1)}"
+                    with f_cols[i]:
+                        st.markdown(f"""
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 6px 8px; text-align: center;">
+                            <div style="font-size: 0.68rem; color: #64748b; font-weight: 600;">{gw_label}</div>
+                            <div style="font-size: 0.85rem; font-weight: 800; color: #0f172a; margin: 2px 0;">{opp_code} ({ha})</div>
+                            <div style="background: {fdr_cfg['bg']}; color: {fdr_cfg['text']}; border-radius: 4px; font-size: 0.68rem; font-weight: 700; padding: 2px 6px; display: inline-block;">
+                                FDR {fdr_val}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+    else:
+        st.info(f"Informasi detail statistik untuk klub {curr_club} belum tersedia.")
+
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    c_btn_close, _ = st.columns([1.5, 4.5])
+    with c_btn_close:
+        if st.button("✕ Tutup Pop-up", key=f"btn_close_dlg_{curr_club}", use_container_width=True):
+            st.rerun()
+
+def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, df_teams=None, players_df=None):
     """
     Renders Fixtures, Schedule and Fixture Difficulty Rating (FDR) Matrix & Ticker.
     """
@@ -131,6 +361,9 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                     team_stats_map[int(row['team_id'])] = info
                 except Exception:
                     pass
+
+    # Daftar seluruh 20 nama klub Premier League untuk pop-up modal & switcher
+    all_club_names = sorted(df_teams['Klub'].unique().tolist()) if df_teams is not None and not df_teams.empty else (sorted(list(teams_dict.values())) if teams_dict else [])
 
     # Compile structured data for matrix and tickers
     raw_matrix_items = []
@@ -510,18 +743,36 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                             """
                             st.markdown(card_html, unsafe_allow_html=True)
 
-                            # Quick Launchers Deep Dive
+                            # Quick Pop-up Modal Launchers (Buka di halaman yg sama, tidak pindah halaman)
                             col_b1, col_b2 = st.columns(2)
                             with col_b1:
                                 if st.button(f"🔍 Profil {match_item['home_short']}", key=f"btn_card_h_{match_item['id']}", use_container_width=True):
-                                    st.session_state['selected_deepdive_club'] = match_item['home_name']
-                                    st.session_state['active_nav_id'] = "team_strength"
-                                    st.rerun()
+                                    st.session_state['dlg_last_initial'] = match_item['home_name']
+                                    st.session_state['dlg_modal_club'] = match_item['home_name']
+                                    show_club_profile_dialog(
+                                        match_item['home_name'],
+                                        match_item['away_name'],
+                                        all_club_names=all_club_names,
+                                        df_teams=df_teams,
+                                        players_df=players_df,
+                                        fdr_summary=fdr_summary,
+                                        teams_dict=teams_dict,
+                                        club_short_map=club_short_map
+                                    )
                             with col_b2:
                                 if st.button(f"🔍 Profil {match_item['away_short']}", key=f"btn_card_a_{match_item['id']}", use_container_width=True):
-                                    st.session_state['selected_deepdive_club'] = match_item['away_name']
-                                    st.session_state['active_nav_id'] = "team_strength"
-                                    st.rerun()
+                                    st.session_state['dlg_last_initial'] = match_item['away_name']
+                                    st.session_state['dlg_modal_club'] = match_item['away_name']
+                                    show_club_profile_dialog(
+                                        match_item['away_name'],
+                                        match_item['home_name'],
+                                        all_club_names=all_club_names,
+                                        df_teams=df_teams,
+                                        players_df=players_df,
+                                        fdr_summary=fdr_summary,
+                                        teams_dict=teams_dict,
+                                        club_short_map=club_short_map
+                                    )
 
             # -----------------------------------------------------------------
             # TAMPILAN 2: TABEL DATA KOMPARASI INTERAKTIF (10 MATCH)
@@ -562,6 +813,31 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                         "Scout Recommendation": st.column_config.TextColumn("Rekomendasi Taktis FPL", width="large")
                     }
                 )
+
+                st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                st.markdown("###### 🔍 Buka Pop-up Profil Klub Langsung dari Tabel:")
+                c_tb1, c_tb2 = st.columns([3, 1.5])
+                with c_tb1:
+                    tbl_selected_club = st.selectbox(
+                        "Pilih klub untuk membuka pop-up profil & aset FPL:",
+                        options=all_club_names,
+                        key="tbl_view_club_sel"
+                    )
+                with c_tb2:
+                    st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                    if st.button(f"🔍 Buka Profil {tbl_selected_club}", key="btn_open_tbl_club", use_container_width=True):
+                        st.session_state['dlg_last_initial'] = tbl_selected_club
+                        st.session_state['dlg_modal_club'] = tbl_selected_club
+                        show_club_profile_dialog(
+                            tbl_selected_club,
+                            None,
+                            all_club_names=all_club_names,
+                            df_teams=df_teams,
+                            players_df=players_df,
+                            fdr_summary=fdr_summary,
+                            teams_dict=teams_dict,
+                            club_short_map=club_short_map
+                        )
 
     # =========================================================================
     # TAB 2: MATRIKS & TICKER FDR 10 MATCH
