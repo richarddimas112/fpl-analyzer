@@ -716,36 +716,46 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             continue
         sub_df = df[pos_mask]
 
-        # Model xG
+        # Model xG: Opponent_xGC_per_90, was_home, form, thread_per_90, FDR, Diff Attack Team
         pos_m_xg = opt_b_xg.get(pos_key) if isinstance(opt_b_xg, dict) else opt_b_xg
+        opp_xgc_col = sub_df['Opponent_xGC_per_90'] if 'Opponent_xGC_per_90' in sub_df.columns else (sub_df['xGC per 90'] if 'xGC per 90' in sub_df.columns else pd.Series(1.35, index=sub_df.index))
+        home_col = sub_df['Next_Is_Home'] if 'Next_Is_Home' in sub_df.columns else pd.Series(1, index=sub_df.index)
+        form_col = sub_df['Form'] if 'Form' in sub_df.columns else pd.Series(3.0, index=sub_df.index)
+        threat_col = sub_df['raw_threat90'] if 'raw_threat90' in sub_df.columns else (sub_df['threat_per_90'] if 'threat_per_90' in sub_df.columns else pd.Series(15.0, index=sub_df.index))
+        fdr_col = sub_df['FDR1'] if 'FDR1' in sub_df.columns else pd.Series(3.0, index=sub_df.index)
+        diff_att_col = sub_df['Diff Attack Team'] if 'Diff Attack Team' in sub_df.columns else pd.Series(0.0, index=sub_df.index)
+
         if pos_m_xg is not None:
             X_xg = pd.DataFrame({
-                'xG_per_90': sub_df['raw_xg90'],
-                'Opponent_xGC_per_90': sub_df['Opponent_xGC_per_90'],
-                'was_home': sub_df['Next_Is_Home'],
-                'form': sub_df['Form'],
-                'thread_per_90': sub_df['raw_threat90'],
-                'FDR': sub_df['FDR1']
-            }, index=sub_df.index)
+                'Opponent_xGC_per_90': opp_xgc_col,
+                'was_home': home_col,
+                'form': form_col,
+                'thread_per_90': threat_col,
+                'FDR': fdr_col,
+                'Diff Attack Team': diff_att_col
+            }, index=sub_df.index).fillna(0.0)
             raw_xg_match[pos_mask.values] = pos_m_xg.predict(X_xg)
         else:
-            raw_xg_match[pos_mask.values] = (sub_df['raw_xg90'] * (sub_df['Opponent_xGC_per_90'] / 1.35) * (1.1 if sub_df['Next_Is_Home'].mean() == 1 else 0.9)).values
+            raw_xg_match[pos_mask.values] = (threat_col / 50.0 * (opp_xgc_col / 1.35) * (1.1 if home_col.mean() == 1 else 0.9)).values
 
-        # Model xA
+        # Model xA: Opponent_xGC_per_90, was_home, is_setpiece_taker, form, creativity_per_90, FDR, Diff Attack Team
         pos_m_xa = opt_b_xa.get(pos_key) if isinstance(opt_b_xa, dict) else opt_b_xa
+        sp_col = sub_df['is_setpiece_taker'] if 'is_setpiece_taker' in sub_df.columns else pd.Series(0, index=sub_df.index)
+        creativity_col = sub_df['raw_creativity90'] if 'raw_creativity90' in sub_df.columns else (sub_df['creativity_per_90'] if 'creativity_per_90' in sub_df.columns else pd.Series(15.0, index=sub_df.index))
+
         if pos_m_xa is not None:
             X_xa = pd.DataFrame({
-                'xA_per_90': sub_df['raw_xa90'],
-                'Opponent_xGC_per_90': sub_df['Opponent_xGC_per_90'],
-                'was_home': sub_df['Next_Is_Home'],
-                'is_setpiece_taker': sub_df['is_setpiece_taker'],
-                'form': sub_df['Form'],
-                'creativity_per_90': sub_df['raw_creativity90'],
-                'FDR': sub_df['FDR1']
-            }, index=sub_df.index)
+                'Opponent_xGC_per_90': opp_xgc_col,
+                'was_home': home_col,
+                'is_setpiece_taker': sp_col,
+                'form': form_col,
+                'creativity_per_90': creativity_col,
+                'FDR': fdr_col,
+                'Diff Attack Team': diff_att_col
+            }, index=sub_df.index).fillna(0.0)
             raw_xa_match[pos_mask.values] = pos_m_xa.predict(X_xa)
         else:
-            raw_xa_match[pos_mask.values] = (sub_df['raw_xa90'] * (sub_df['Opponent_xGC_per_90'] / 1.35) * (1.1 if sub_df['Next_Is_Home'].mean() == 1 else 0.9)).values
+            raw_xa_match[pos_mask.values] = (creativity_col / 60.0 * (opp_xgc_col / 1.35) * (1.1 if home_col.mean() == 1 else 0.9)).values
 
     # KHUSUS UNTUK POSISI 'GK' (Kiper): Paksa (hardcode) nilai raw_xg_match = 0.0 dan raw_xa_match = 0.0
     gk_mask = (df['Posisi'] == 'GK')
@@ -798,6 +808,10 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
     raw_xcs = prob_cs * poin_cs
     df['xCS Pts'] = np.where(df['Avg Mins (L5M)'] >= 60.0, raw_xcs, 0.0).round(2)
 
+    # Inisialisasi default variabel differential tim
+    df['Diff Attack Team'] = 0.0
+    df['Diff Defense Team'] = 0.0
+
     # g. xBP (Bonus Points)
     # FIX: Konversi bps_per_90_calc menjadi ekspektasi match riil dengan mins_ratio.
     exp_bps_match = df['bps_per_90_calc'] * mins_ratio
@@ -815,6 +829,7 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
     cols = [
         'id', 'team',
         'Nama Pemain', 'Klub', 'Lawan GW Berikutnya', 'Posisi', 'Harga (£m)', 'xPoin', 'xPoin (Option B)',
+        'Diff Attack Team', 'Diff Defense Team',
         'xG Pred (Match)', 'xA Pred (Match)', 'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
         'Avg Mins (L5M)', 'Total Poin', 'FDR1', 'FDR3', 'FDR5', 'FDR10', 'Form', '% Ownership', 'Net Transfers GW',
         'Transfers In GW', 'Transfers Out GW',
@@ -827,7 +842,174 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         'BPS', 'Bonus Poin', 'Kartu Kuning', 'Kartu Merah', 'Saves',
         'Penalti Order', 'Free Kick Order', 'Corner Order', 'Status',
         'Peluang Main GW (%)', 'Berita Cedera', 'Menit Bermain', 'Gol', 'Asis',
-        'Clean Sheet', 'Kebobolan', 'goals_conceded', 'Nama Lengkap', 'Poin per £m', 'xPoin per £m', 'Kemudahan Jadwal'
+        'Clean Sheet', 'Kebobolan', 'goals_conceded', 'Nama Lengkap', 'Poin per £m', 'xPoin per £m', 'Kemudahan Jadwal',
+        'Opponent_xGC_per_90', 'Opponent_xG_per_90_attack', 'Next_Is_Home', 'is_setpiece_taker',
+        'raw_threat90', 'raw_creativity90', 'raw_xg90', 'raw_xa90', 'raw_xgc90', 'raw_saves90',
+        'raw_bps90', 'raw_ict90', 'bps_per_90_calc', 'xDC_calc'
     ]
     
-    return df[cols], team_dict
+    valid_cols = [c for c in cols if c in df.columns]
+    return df[valid_cols], team_dict
+
+
+def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_diffs_map: dict, _opt_b_models: tuple = None) -> pd.DataFrame:
+    """
+    Menyematkan 'Diff Attack Team' dan 'Diff Defense Team' ke setiap pemain berdasarkan klubnya,
+    kemudian merekalibrasi model Option B (xG Pred, xA Pred, xDC Pts, xCS Pts, xBP, dan xPoin).
+    
+    Fitur Model Prediksi xG: Opponent_xGC_per_90, was_home, form, thread_per_90, FDR, Diff Attack Team
+    Fitur Model Prediksi xA: Opponent_xGC_per_90, was_home, is_setpiece_taker, form, creativity_per_90, FDR, Diff Attack Team
+    """
+    if players_df.empty:
+        return players_df
+
+    df = players_df.copy()
+
+    if not team_diffs_map:
+        if 'Diff Attack Team' not in df.columns:
+            df['Diff Attack Team'] = 0.0
+        if 'Diff Defense Team' not in df.columns:
+            df['Diff Defense Team'] = 0.0
+        return df
+
+    # Map nilai differential tim
+    def get_diff_val(row, metric_key):
+        c_name = row.get('Klub')
+        t_id = row.get('team')
+        info = team_diffs_map.get(c_name) or team_diffs_map.get(str(c_name)) or team_diffs_map.get(t_id) or team_diffs_map.get(str(t_id), {})
+        if isinstance(info, dict):
+            return float(info.get(metric_key, 0.0))
+        return 0.0
+
+    df['Diff Attack Team'] = df.apply(lambda r: get_diff_val(r, 'diff_attack'), axis=1)
+    df['Diff Defense Team'] = df.apply(lambda r: get_diff_val(r, 'diff_defense'), axis=1)
+
+    mins_ratio = df['Avg Mins (L5M)'] / 90.0
+
+    # 1. Prediksi xG Pred (Match) dan xA Pred (Match) menggunakan Model Regresi Option B atau penyesuaian faktor
+    if _opt_b_models is not None and any(m is not None for m in _opt_b_models):
+        opt_b_xg, opt_b_xa = _opt_b_models
+        raw_xg_match = np.zeros(len(df))
+        raw_xa_match = np.zeros(len(df))
+
+        opp_xgc = df['Opponent_xGC_per_90'] if 'Opponent_xGC_per_90' in df.columns else (df['xGC per 90'] if 'xGC per 90' in df.columns else pd.Series(1.35, index=df.index))
+        was_home = df['Next_Is_Home'] if 'Next_Is_Home' in df.columns else pd.Series(1, index=df.index)
+        is_sp = df['is_setpiece_taker'] if 'is_setpiece_taker' in df.columns else pd.Series(0, index=df.index)
+        form_series = df['Form'] if 'Form' in df.columns else pd.Series(3.0, index=df.index)
+        threat_series = df['raw_threat90'] if 'raw_threat90' in df.columns else (df['threat_per_90'] if 'threat_per_90' in df.columns else (df['Threat'] if 'Threat' in df.columns else pd.Series(15.0, index=df.index)))
+        creativity_series = df['raw_creativity90'] if 'raw_creativity90' in df.columns else (df['creativity_per_90'] if 'creativity_per_90' in df.columns else (df['Creativity'] if 'Creativity' in df.columns else pd.Series(15.0, index=df.index)))
+        fdr_series = df['FDR1'] if 'FDR1' in df.columns else pd.Series(3.0, index=df.index)
+        diff_att_series = df['Diff Attack Team'] if 'Diff Attack Team' in df.columns else pd.Series(0.0, index=df.index)
+
+        for pos_key in ['FWD', 'MID', 'DEF']:
+            pos_mask = (df['Posisi'] == pos_key)
+            if not pos_mask.any():
+                continue
+            sub_df = df[pos_mask]
+            sub_idx = sub_df.index
+
+            pos_m_xg = opt_b_xg.get(pos_key) if isinstance(opt_b_xg, dict) else opt_b_xg
+            if pos_m_xg is not None:
+                X_xg = pd.DataFrame({
+                    'Opponent_xGC_per_90': opp_xgc.loc[sub_idx],
+                    'was_home': was_home.loc[sub_idx],
+                    'form': form_series.loc[sub_idx],
+                    'thread_per_90': threat_series.loc[sub_idx],
+                    'FDR': fdr_series.loc[sub_idx],
+                    'Diff Attack Team': diff_att_series.loc[sub_idx]
+                }, index=sub_idx).fillna(0.0)
+                raw_xg_match[pos_mask.values] = pos_m_xg.predict(X_xg)
+            else:
+                raw_xg_match[pos_mask.values] = (threat_series.loc[sub_idx] / 50.0 * (opp_xgc.loc[sub_idx] / 1.35)).values
+
+            pos_m_xa = opt_b_xa.get(pos_key) if isinstance(opt_b_xa, dict) else opt_b_xa
+            if pos_m_xa is not None:
+                X_xa = pd.DataFrame({
+                    'Opponent_xGC_per_90': opp_xgc.loc[sub_idx],
+                    'was_home': was_home.loc[sub_idx],
+                    'is_setpiece_taker': is_sp.loc[sub_idx],
+                    'form': form_series.loc[sub_idx],
+                    'creativity_per_90': creativity_series.loc[sub_idx],
+                    'FDR': fdr_series.loc[sub_idx],
+                    'Diff Attack Team': diff_att_series.loc[sub_idx]
+                }, index=sub_idx).fillna(0.0)
+                raw_xa_match[pos_mask.values] = pos_m_xa.predict(X_xa)
+            else:
+                raw_xa_match[pos_mask.values] = (creativity_series.loc[sub_idx] / 60.0 * (opp_xgc.loc[sub_idx] / 1.35)).values
+
+        gk_mask = (df['Posisi'] == 'GK')
+        raw_xg_match[gk_mask] = 0.0
+        raw_xa_match[gk_mask] = 0.0
+
+        df['xG Pred (Match)'] = (np.maximum(0.0, raw_xg_match) * mins_ratio).round(2)
+        df['xA Pred (Match)'] = (np.maximum(0.0, raw_xa_match) * mins_ratio).round(2)
+    else:
+        att_diff_factor = np.clip(1.0 + (df['Diff Attack Team'] / 100.0) * 0.5, 0.6, 1.6)
+        gk_mask = (df['Posisi'] == 'GK')
+        df['xG Pred (Match)'] = np.where(
+            gk_mask,
+            0.0,
+            (df['xG Pred (Match)'] * att_diff_factor).round(2)
+        )
+        df['xA Pred (Match)'] = np.where(
+            gk_mask,
+            0.0,
+            (df['xA Pred (Match)'] * att_diff_factor).round(2)
+        )
+
+    # 2. xG Pts dan xA Pts
+    poin_gol_map = {'GK': 10.0, 'DEF': 6.0, 'MID': 5.0, 'FWD': 4.0}
+    poin_gol = df['Posisi'].map(poin_gol_map).fillna(4.0)
+    df['xG Pts'] = (df['xG Pred (Match)'] * poin_gol).round(2)
+    df['xA Pts'] = (df['xA Pred (Match)'] * 3.0).round(2)
+
+    # 3. xDC Pts (Defensive Contribution Points)
+    # Jika Diff Defense negatif (serangan lawan sangat kuat), aksi defensif pemain (tackle, blok, clearance) meningkat
+    dc_thresh_map = {'DEF': 10, 'MID': 12, 'FWD': 12, 'GK': 0}
+    thresholds = df['Posisi'].map(dc_thresh_map).fillna(0)
+    dc_pressure_factor = np.clip(1.0 - (df['Diff Defense Team'] / 100.0) * 0.3, 0.7, 1.4)
+    dc_col = df['Defensive Contribution per 90'] if 'Defensive Contribution per 90' in df.columns else (df['xDC_calc'] if 'xDC_calc' in df.columns else pd.Series(0.0, index=df.index))
+    dc_pts = []
+    for mu_base, t_val, p_factor in zip(dc_col * mins_ratio, thresholds, dc_pressure_factor):
+        if t_val > 0 and mu_base > 0:
+            mu_adj = mu_base * p_factor
+            prob = 1.0 - float(poisson.cdf(t_val - 1, mu_adj))
+            val = float(np.clip(2.0 * prob, 0.0, 2.0))
+        else:
+            val = 0.0
+        dc_pts.append(val)
+    df['xDC Pts'] = np.array(dc_pts).round(2)
+
+    # 4. xCS Pts (Clean Sheet Points)
+    # Jika Diff Defense positif (pertahanan lebih kokoh dari serangan lawan), peluang Clean Sheet naik
+    poin_cs_map = {'GK': 4.0, 'DEF': 4.0, 'MID': 1.0, 'FWD': 0.0}
+    poin_cs = df['Posisi'].map(poin_cs_map).fillna(0.0)
+    def_suppression = np.clip(1.0 - (df['Diff Defense Team'] / 100.0) * 0.5, 0.4, 1.8)
+    eff_opp_xgc = (df['xGC per 90'] if 'xGC per 90' in df.columns else (df['Opponent_xGC_per_90'] if 'Opponent_xGC_per_90' in df.columns else 1.35)) * def_suppression
+    prob_cs = np.exp(-eff_opp_xgc * mins_ratio)
+    raw_xcs = prob_cs * poin_cs
+    avg_mins_col = df['Avg Mins (L5M)'] if 'Avg Mins (L5M)' in df.columns else pd.Series(90.0, index=df.index)
+    df['xCS Pts'] = np.where(avg_mins_col >= 60.0, raw_xcs, 0.0).round(2)
+
+    # 5. xBP (Bonus Points)
+    if 'bps_per_90_calc' in df.columns:
+        exp_bps_match = df['bps_per_90_calc'] * mins_ratio
+    elif 'raw_bps90' in df.columns:
+        exp_bps_match = df['raw_bps90'] * mins_ratio
+    elif 'BPS' in df.columns:
+        exp_bps_match = df['BPS'] / 90.0 * mins_ratio
+    else:
+        exp_bps_match = pd.Series(15.0, index=df.index) * mins_ratio
+    raw_xbp = (exp_bps_match * 0.02) + ((df['xG Pred (Match)'] + df['xA Pred (Match)']) * 0.5)
+    df['xBP'] = np.clip(raw_xbp, 0.0, 3.0).round(2)
+
+    # 6. Total Option B xPoin
+    mins_pts = df['xMins Pts'] if 'xMins Pts' in df.columns else np.clip(avg_mins_col / 45.0, 0.0, 2.0).round(2)
+    saves_pts = df['xSaves Pts'] if 'xSaves Pts' in df.columns else pd.Series(0.0, index=df.index)
+    df['xPoin (Option B)'] = (
+        mins_pts + df['xG Pts'] + df['xA Pts'] + 
+        saves_pts + df['xDC Pts'] + df['xCS Pts'] + df['xBP']
+    ).round(2)
+
+    return df
+

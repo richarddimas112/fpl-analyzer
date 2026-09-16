@@ -106,9 +106,11 @@ def check_setpiece_taker(corner_ord, fk_ord):
     return 0
 
 @st.cache_data(ttl=86400)
-def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
+def train_option_b_models(players_list, fdr_summary, current_gw, df_historical, _df_teams=None):
     """
     Train separate Linear Regression models for xG and xA match-level prediction per position (FWD, MID, DEF).
+    Model xG Features: Opponent_xGC_per_90, was_home, form, thread_per_90, FDR, Diff Attack Team
+    Model xA Features: Opponent_xGC_per_90, was_home, is_setpiece_taker, form, creativity_per_90, FDR, Diff Attack Team
     """
     opt_b_models_xg = {}
     opt_b_models_xa = {}
@@ -116,6 +118,16 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
     stats_xa = {}
 
     target_positions = ['FWD', 'MID', 'DEF']
+
+    # Pre-build team strength dictionary to optimize calculation
+    team_att_dict = {}
+    team_def_dict = {}
+    if _df_teams is not None and not _df_teams.empty:
+        for _, row in _df_teams.iterrows():
+            t_id = row.get('team_id')
+            if t_id:
+                team_att_dict[t_id] = float(row.get('Skor Serangan', 50.0))
+                team_def_dict[t_id] = float(row.get('Skor Pertahanan', 50.0))
 
     for pos_key in target_positions:
         cfg = POS_MODEL_CONFIGS[pos_key]
@@ -132,6 +144,7 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
             corner_ord = p.get('corners_and_indirect_freekicks_order')
             fk_ord = p.get('direct_freekicks_order')
             is_sp = check_setpiece_taker(corner_ord, fk_ord)
+            p_team_id = p.get('team')
 
             p_hist = fetch_player_history(p['id'])
             if p_hist:
@@ -139,8 +152,6 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
                 for m in sorted_hist:
                     mins = int(m.get('minutes', 0))
                     if mins > 0:
-                        xg90 = (float(m.get('expected_goals', 0.0) or 0.0) / mins) * 90.0
-                        xa90 = (float(m.get('expected_assists', 0.0) or 0.0) / mins) * 90.0
                         was_home = 1 if m.get('was_home') else 0
                         opp_id = m.get('opponent_team', 1)
                         opp_fdr_info = fdr_summary.get(opp_id, {})
@@ -158,26 +169,35 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
 
                         player_name = p.get('web_name', f"Pemain {p.get('id')}")
 
+                        # Hitung Diff Attack Team setiap laga historis menggunakan selisih skor serangan tim vs pertahanan musuh
+                        diff_attack_val = 0.0
+                        if team_att_dict and team_def_dict:
+                            p_att = team_att_dict.get(p_team_id, 50.0)
+                            opp_def = team_def_dict.get(opp_id, 50.0)
+                            diff_attack_val = round(p_att - opp_def, 1)
+                        else:
+                            diff_attack_val = round((3.5 - fdr_val) * 12.0 + (5.0 if was_home else -5.0), 1)
+
                         rows_xg.append({
                             'player_name': player_name,
-                            'xG_per_90': xg90,
                             'Opponent_xGC_per_90': opp_xgc90,
                             'was_home': was_home,
                             'form': p_form,
                             'thread_per_90': threat90,
                             'FDR': fdr_val,
+                            'Diff Attack Team': diff_attack_val,
                             'actual_xg': actual_xg
                         })
 
                         rows_xa.append({
                             'player_name': player_name,
-                            'xA_per_90': xa90,
                             'Opponent_xGC_per_90': opp_xgc90,
                             'was_home': was_home,
                             'is_setpiece_taker': is_sp,
                             'form': p_form,
                             'creativity_per_90': creativity90,
                             'FDR': fdr_val,
+                            'Diff Attack Team': diff_attack_val,
                             'actual_xa': actual_xa
                         })
 
@@ -187,8 +207,6 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
         else:
             np.random.seed(101 + pos_el_type)
             N = 400
-            xg90_s = np.random.exponential(0.35 if pos_key in ['FWD', 'MID'] else 0.08, size=N)
-            xa90_s = np.random.exponential(0.25 if pos_key in ['FWD', 'MID'] else 0.10, size=N)
             opp_xgc_s = np.random.uniform(0.7, 2.3, size=N)
             home_s = np.random.choice([0, 1], size=N)
             form_s = np.random.uniform(0.5, 8.5, size=N)
@@ -196,50 +214,70 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
             threat90_s = np.random.uniform(5.0, 60.0 if pos_key in ['FWD', 'MID'] else 15.0, size=N)
             creativity90_s = np.random.uniform(5.0, 70.0 if pos_key in ['FWD', 'MID'] else 20.0, size=N)
             fdr_s = np.random.uniform(1.0, 5.0, size=N)
+            diff_att_s = np.random.uniform(-35.0, 35.0, size=N)
 
-            noise_xg = np.random.normal(0, 0.05, size=N)
-            noise_xa = np.random.normal(0, 0.04, size=N)
+            noise_xg = np.random.normal(0, 0.04, size=N)
+            noise_xa = np.random.normal(0, 0.03, size=N)
 
-            actual_xg_s = np.maximum(0.0, (0.45 * xg90_s * (opp_xgc_s / 1.35) + 0.10 * home_s + 0.02 * form_s + 0.003 * threat90_s - 0.02 * (fdr_s - 3.0) + noise_xg))
-            actual_xa_s = np.maximum(0.0, (0.40 * xa90_s * (opp_xgc_s / 1.35) + 0.08 * home_s + 0.12 * sp_s + 0.02 * form_s + 0.003 * creativity90_s - 0.02 * (fdr_s - 3.0) + noise_xa))
+            actual_xg_s = np.maximum(0.0, (
+                0.08 * opp_xgc_s + 
+                0.06 * home_s + 
+                0.02 * form_s + 
+                0.0035 * threat90_s - 
+                0.02 * (fdr_s - 3.0) + 
+                0.003 * diff_att_s + 
+                noise_xg
+            ))
+            actual_xa_s = np.maximum(0.0, (
+                0.06 * opp_xgc_s + 
+                0.05 * home_s + 
+                0.09 * sp_s + 
+                0.015 * form_s + 
+                0.003 * creativity90_s - 
+                0.02 * (fdr_s - 3.0) + 
+                0.0025 * diff_att_s + 
+                noise_xa
+            ))
 
             df_xg_train = pd.DataFrame({
                 'player_name': [f"Simulated {pos_key} {i+1}" for i in range(N)],
-                'xG_per_90': xg90_s,
                 'Opponent_xGC_per_90': opp_xgc_s,
                 'was_home': home_s,
                 'form': form_s,
                 'thread_per_90': threat90_s,
                 'FDR': fdr_s,
+                'Diff Attack Team': diff_att_s,
                 'actual_xg': actual_xg_s
             })
 
             df_xa_train = pd.DataFrame({
                 'player_name': [f"Simulated {pos_key} {i+1}" for i in range(N)],
-                'xA_per_90': xa90_s,
                 'Opponent_xGC_per_90': opp_xgc_s,
                 'was_home': home_s,
                 'is_setpiece_taker': sp_s,
                 'form': form_s,
                 'creativity_per_90': creativity90_s,
                 'FDR': fdr_s,
+                'Diff Attack Team': diff_att_s,
                 'actual_xa': actual_xa_s
             })
 
         # --- INCREMENTAL TRAINING LOGIC (OPTION B) ---
         if current_gw <= 10 and not df_historical.empty:
-            hist_pos = df_historical[df_historical['element_type'] == pos_el_type]
+            hist_pos = df_historical[df_historical['element_type'] == pos_el_type].copy()
             if not hist_pos.empty:
-                req_xg = ['xG_per_90', 'Opponent_xGC_per_90', 'was_home', 'form', 'thread_per_90', 'FDR', 'actual_xg']
+                if 'Diff Attack Team' not in hist_pos.columns:
+                    hist_pos['Diff Attack Team'] = 0.0
+                req_xg = ['Opponent_xGC_per_90', 'was_home', 'form', 'thread_per_90', 'FDR', 'Diff Attack Team', 'actual_xg']
                 if all(c in hist_pos.columns for c in req_xg):
                     df_xg_train = pd.concat([df_xg_train, hist_pos[req_xg]], ignore_index=True)
                 
-                req_xa = ['xA_per_90', 'Opponent_xGC_per_90', 'was_home', 'is_setpiece_taker', 'form', 'creativity_per_90', 'FDR', 'actual_xa']
+                req_xa = ['Opponent_xGC_per_90', 'was_home', 'is_setpiece_taker', 'form', 'creativity_per_90', 'FDR', 'Diff Attack Team', 'actual_xa']
                 if all(c in hist_pos.columns for c in req_xa):
                     df_xa_train = pd.concat([df_xa_train, hist_pos[req_xa]], ignore_index=True)
 
-        # Fit Model xG (FWD, MID, DEF include thread_per_90 and FDR)
-        feature_cols_xg = ['xG_per_90', 'Opponent_xGC_per_90', 'was_home', 'form', 'thread_per_90', 'FDR']
+        # Fit Model xG: Opponent_xGC_per_90, was_home, form, thread_per_90, FDR, Diff Attack Team
+        feature_cols_xg = ['Opponent_xGC_per_90', 'was_home', 'form', 'thread_per_90', 'FDR', 'Diff Attack Team']
         X_xg = df_xg_train[feature_cols_xg]
         y_xg = df_xg_train['actual_xg']
         model_xg = LinearRegression()
@@ -250,8 +288,8 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
 
         opt_b_models_xg[pos_key] = model_xg
 
-        # Fit Model xA (FWD, MID, DEF include creativity_per_90 and FDR)
-        feature_cols_xa = ['xA_per_90', 'Opponent_xGC_per_90', 'was_home', 'is_setpiece_taker', 'form', 'creativity_per_90', 'FDR']
+        # Fit Model xA: Opponent_xGC_per_90, was_home, is_setpiece_taker, form, creativity_per_90, FDR, Diff Attack Team
+        feature_cols_xa = ['Opponent_xGC_per_90', 'was_home', 'is_setpiece_taker', 'form', 'creativity_per_90', 'FDR', 'Diff Attack Team']
         X_xa = df_xa_train[feature_cols_xa]
         y_xa = df_xa_train['actual_xa']
         model_xa = LinearRegression()
@@ -265,12 +303,12 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
         # Evaluation DataFrames for Streamlit UI Inspection
         eval_df_xg = pd.DataFrame({
             'Pemain': df_xg_train['player_name'] if 'player_name' in df_xg_train else f"{pos_key} Sample",
-            'xG/90': df_xg_train['xG_per_90'].round(2),
-            'Threat/90': df_xg_train['thread_per_90'].round(2),
-            'FDR': df_xg_train['FDR'].round(1),
             'Lawan xGC/90': df_xg_train['Opponent_xGC_per_90'].round(2),
             'Home': df_xg_train['was_home'],
             'Form': df_xg_train['form'].round(1),
+            'Threat/90': df_xg_train['thread_per_90'].round(2),
+            'FDR': df_xg_train['FDR'].round(1),
+            'Diff Attack Team': df_xg_train['Diff Attack Team'].round(1),
             'y_actual': df_xg_train['actual_xg'].round(2),
             'y_predicted': np.round(pred_xg, 2),
             'residual (e)': np.round(df_xg_train['actual_xg'] - pred_xg, 2)
@@ -278,26 +316,63 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
 
         eval_df_xa = pd.DataFrame({
             'Pemain': df_xa_train['player_name'] if 'player_name' in df_xa_train else f"{pos_key} Sample",
-            'xA/90': df_xa_train['xA_per_90'].round(2),
-            'Creativity/90': df_xa_train['creativity_per_90'].round(2),
-            'FDR': df_xa_train['FDR'].round(1),
             'Lawan xGC/90': df_xa_train['Opponent_xGC_per_90'].round(2),
             'Home': df_xa_train['was_home'],
             'SetPiece': df_xa_train['is_setpiece_taker'],
             'Form': df_xa_train['form'].round(1),
+            'Creativity/90': df_xa_train['creativity_per_90'].round(2),
+            'FDR': df_xa_train['FDR'].round(1),
+            'Diff Attack Team': df_xa_train['Diff Attack Team'].round(1),
             'y_actual': df_xa_train['actual_xa'].round(2),
             'y_predicted': np.round(pred_xa, 2),
             'residual (e)': np.round(df_xa_train['actual_xa'] - pred_xa, 2)
         }).sort_values(by='y_actual', ascending=False).head(10)
 
+        # Standardized Beta Coefficients & Importance Calculation
+        # Beta_std = Beta_raw * (std_X / std_y) -> mengukur kontribusi relatif variabel
+        std_y_xg = float(np.std(y_xg)) if float(np.std(y_xg)) > 0 else 1.0
+        std_x_xg = np.array([float(np.std(X_xg[col])) if float(np.std(X_xg[col])) > 0 else 1.0 for col in X_xg.columns])
+        beta_std_xg = model_xg.coef_ * (std_x_xg / std_y_xg)
+        abs_beta_xg = np.abs(beta_std_xg)
+        total_abs_xg = np.sum(abs_beta_xg) if np.sum(abs_beta_xg) > 0 else 1.0
+        pct_importance_xg = np.round((abs_beta_xg / total_abs_xg) * 100.0, 1)
+
+        coef_df_xg = pd.DataFrame({
+            'Variabel Fitur': list(X_xg.columns),
+            'Koefisien Mentah (β)': np.round(model_xg.coef_, 4),
+            'Beta Standar (Std β)': np.round(beta_std_xg, 4),
+            'Kontribusi Relatif (%)': pct_importance_xg,
+            'Arah Pengaruh': ['Positif (+)' if c > 0 else ('Negatif (-)' if c < 0 else 'Netral') for c in model_xg.coef_]
+        }).sort_values(by='Kontribusi Relatif (%)', ascending=False)
+
+        top_feature_xg = coef_df_xg.iloc[0]['Variabel Fitur'] if not coef_df_xg.empty else '-'
+        top_contrib_pct_xg = coef_df_xg.iloc[0]['Kontribusi Relatif (%)'] if not coef_df_xg.empty else 0.0
+
+        std_y_xa = float(np.std(y_xa)) if float(np.std(y_xa)) > 0 else 1.0
+        std_x_xa = np.array([float(np.std(X_xa[col])) if float(np.std(X_xa[col])) > 0 else 1.0 for col in X_xa.columns])
+        beta_std_xa = model_xa.coef_ * (std_x_xa / std_y_xa)
+        abs_beta_xa = np.abs(beta_std_xa)
+        total_abs_xa = np.sum(abs_beta_xa) if np.sum(abs_beta_xa) > 0 else 1.0
+        pct_importance_xa = np.round((abs_beta_xa / total_abs_xa) * 100.0, 1)
+
+        coef_df_xa = pd.DataFrame({
+            'Variabel Fitur': list(X_xa.columns),
+            'Koefisien Mentah (β)': np.round(model_xa.coef_, 4),
+            'Beta Standar (Std β)': np.round(beta_std_xa, 4),
+            'Kontribusi Relatif (%)': pct_importance_xa,
+            'Arah Pengaruh': ['Positif (+)' if c > 0 else ('Negatif (-)' if c < 0 else 'Netral') for c in model_xa.coef_]
+        }).sort_values(by='Kontribusi Relatif (%)', ascending=False)
+
+        top_feature_xa = coef_df_xa.iloc[0]['Variabel Fitur'] if not coef_df_xa.empty else '-'
+        top_contrib_pct_xa = coef_df_xa.iloc[0]['Kontribusi Relatif (%)'] if not coef_df_xa.empty else 0.0
+
         stats_xg[pos_key] = {
             'r2': r2_xg,
             'mae': mae_xg,
             'intercept': round(float(model_xg.intercept_), 4),
-            'coef_df': pd.DataFrame({
-                'Variabel Fitur': list(X_xg.columns),
-                'Koefisien (β)': np.round(model_xg.coef_, 4)
-            }),
+            'coef_df': coef_df_xg,
+            'top_feature': top_feature_xg,
+            'top_pct': top_contrib_pct_xg,
             'eval_df': eval_df_xg
         }
 
@@ -305,10 +380,9 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical):
             'r2': r2_xa,
             'mae': mae_xa,
             'intercept': round(float(model_xa.intercept_), 4),
-            'coef_df': pd.DataFrame({
-                'Variabel Fitur': list(X_xa.columns),
-                'Koefisien (β)': np.round(model_xa.coef_, 4)
-            }),
+            'coef_df': coef_df_xa,
+            'top_feature': top_feature_xa,
+            'top_pct': top_contrib_pct_xa,
             'eval_df': eval_df_xa
         }
 

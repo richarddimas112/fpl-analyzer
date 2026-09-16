@@ -8,6 +8,17 @@ from datetime import datetime
 import streamlit as st
 import pandas as pd
 import numpy as np
+from src.auth import login_user, register_user, reset_password, logout_user
+from src.firebase_client import get_firestore_url
+from src.fpl_sync import (
+    parse_fpl_team_id,
+    fetch_fpl_manager_profile,
+    fetch_fpl_realtime_squad,
+    map_fpl_picks_to_squad_slots,
+    calculate_squad_transfer_delta,
+    parse_and_map_squad_from_text
+)
+import requests
 
 SAVED_SQUAD_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "saved_squad.json")
 
@@ -74,26 +85,71 @@ def get_default_squad_ids(players_df):
 
     return squad_ids
 
+
+
+def fetch_squad_from_firestore(uid, token):
+    url, _ = get_firestore_url("squads", uid)
+    if not url: return None
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            doc = r.json()
+            if "fields" in doc and "squad_json" in doc["fields"]:
+                squad_json_str = doc["fields"]["squad_json"]["stringValue"]
+                return json.loads(squad_json_str)
+    except Exception:
+        pass
+    return None
+
+def save_squad_to_firestore(uid, token, active_slot_id, squad_slots_data, fpl_profile=None):
+    url, _ = get_firestore_url("squads", uid)
+    if not url: return False
+    headers = {"Authorization": f"Bearer {token}"}
+    payload_data = {
+        "active_slot_id": active_slot_id,
+        "squad_slots_data": squad_slots_data
+    }
+    if fpl_profile:
+        payload_data["fpl_profile"] = fpl_profile
+    payload = {
+        "fields": {
+            "uid": {"stringValue": uid},
+            "squad_json": {"stringValue": json.dumps(payload_data)},
+            "updated_at": {"stringValue": datetime.utcnow().isoformat() + "Z"}
+        }
+    }
+    try:
+        r = requests.patch(url, json=payload, headers=headers, timeout=5)
+        return r.status_code == 200
+    except Exception:
+        return False
+
 def load_all_persisted_squads(players_df):
-    """
-    Load all 3 squad slots from disk, supporting backward compatibility with single-slot format.
-    Ensures that slot_1, slot_2, and slot_3 always exist with valid 15-player IDs.
-    """
     active_slot_id = "slot_1"
     squad_slots_data = {}
+    fpl_profile = None
     valid_ids = set(players_df['id'].dropna().astype(int).tolist())
 
-    if os.path.exists(SAVED_SQUAD_FILE):
+    if "user_token" in st.session_state and "user_uid" in st.session_state:
+        cloud_data = fetch_squad_from_firestore(st.session_state["user_uid"], st.session_state["user_token"])
+        if cloud_data:
+            squad_slots_data = cloud_data.get("squad_slots_data", {})
+            active_slot_id = cloud_data.get("active_slot_id", "slot_1")
+            fpl_profile = cloud_data.get("fpl_profile")
+
+    if not squad_slots_data and os.path.exists(SAVED_SQUAD_FILE):
         try:
             with open(SAVED_SQUAD_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            if "fpl_profile" in data:
+                fpl_profile = data.get("fpl_profile")
             if "squad_slots_data" in data and isinstance(data["squad_slots_data"], dict):
                 squad_slots_data = data["squad_slots_data"]
                 active_slot_id = data.get("active_slot_id", "slot_1")
                 if active_slot_id not in SLOT_KEYS:
                     active_slot_id = "slot_1"
             elif "slots" in data and isinstance(data["slots"], dict) and len(data["slots"]) > 0:
-                # Migrate legacy single-slot format to slot_1
                 squad_slots_data = {
                     "slot_1": {
                         "name": "Slot 1 (Utama)",
@@ -130,12 +186,15 @@ def load_all_persisted_squads(players_df):
                         valid_loaded[slot_name] = int(pos_players.iloc[0]['id'])
             s_val["slots"] = valid_loaded
 
-    return active_slot_id, squad_slots_data
+    return active_slot_id, squad_slots_data, fpl_profile
 
-def save_all_persisted_squads(active_slot_id, squad_slots_data):
-    """
-    Save all 3 slots to disk and keep root 'slots' in sync with active slot for backwards compatibility.
-    """
+def save_all_persisted_squads(active_slot_id, squad_slots_data, fpl_profile=None):
+    if fpl_profile is None:
+        fpl_profile = st.session_state.get("fpl_profile")
+
+    if "user_token" in st.session_state and "user_uid" in st.session_state:
+        save_squad_to_firestore(st.session_state["user_uid"], st.session_state["user_token"], active_slot_id, squad_slots_data, fpl_profile=fpl_profile)
+        
     try:
         os.makedirs(os.path.dirname(SAVED_SQUAD_FILE), exist_ok=True)
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -143,6 +202,7 @@ def save_all_persisted_squads(active_slot_id, squad_slots_data):
         data = {
             "active_slot_id": active_slot_id,
             "updated_at": now_str,
+            "fpl_profile": fpl_profile,
             "slots": {k: int(v) for k, v in active_slots.items()},
             "squad_slots_data": {
                 s_id: {
@@ -176,7 +236,7 @@ def save_persisted_squad(squad_slots=None):
             squad_slots_data[active_slot_id]["slots"] = {k: int(v) for k, v in squad_slots.items()}
             squad_slots_data[active_slot_id]["updated_at"] = now_str
             
-        save_all_persisted_squads(active_slot_id, squad_slots_data)
+        save_all_persisted_squads(active_slot_id, squad_slots_data, fpl_profile=st.session_state.get("fpl_profile"))
         st.session_state["squad_last_saved"] = now_str
         return True
     except Exception:
@@ -187,6 +247,79 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
     Renders Tab: 15-Player Squad Planner with 3 Save Slots, Multi-Option xPoints Comparison & 10-Match FDR.
     """
     st.subheader("👥 Perencana Skuad 15 Pemain, Komparasi Multi-Option xPoin & FDR 10 Match")
+    
+    # ---- PROTECTED ROUTE / AUTHENTICATION GATE ----
+    if "user_token" not in st.session_state:
+        st.warning("🔒 Akses Ditolak: Anda harus login untuk menggunakan Squad Planner.")
+        st.info("Fitur Squad Planner memanfaatkan Cloud Firestore untuk menyimpan 3 slot formasi independen Anda secara permanen. Silakan Login atau Daftar untuk melanjutkan.")
+        
+        st.markdown("### 🔑 Akses Akun Cloud Planner")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            auth_mode = st.radio("Pilih Aksi:", ["Login", "Register", "Lupa Password"], horizontal=True, key="squad_planner_auth_mode")
+            
+            if auth_mode == "Login":
+                auth_email = st.text_input("Email", key="squad_planner_auth_email")
+                auth_pass = st.text_input("Password", type="password", key="squad_planner_auth_pass")
+                if st.button("Masuk", key="squad_planner_btn_login", type="primary", use_container_width=True):
+                    with st.spinner("Autentikasi..."):
+                        success, msg = login_user(auth_email, auth_pass)
+                        if success:
+                            st.success("Login berhasil!")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                
+                with st.expander("❓ Lupa Password?"):
+                    st.caption("Jika Anda lupa password, pilih opsi radio **Lupa Password** di atas untuk mengirim link pemulihan ke email Anda.")
+                                
+            elif auth_mode == "Register":
+                auth_email = st.text_input("Email", key="squad_planner_auth_email")
+                auth_pass = st.text_input("Password (minimal 6 karakter)", type="password", key="squad_planner_auth_pass")
+                if st.button("Daftar Akun Baru", key="squad_planner_btn_register", type="primary", use_container_width=True):
+                    with st.spinner("Mendaftarkan akun..."):
+                        success, msg = register_user(auth_email, auth_pass)
+                        if success:
+                            st.success("Registrasi berhasil! Anda telah otomatis masuk.")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                            
+            else:  # Lupa Password
+                st.markdown("#### 🔄 Pemulihan Kata Sandi (Lupa Password)")
+                st.write("Masukkan email yang terdaftar pada akun Anda. Sistem Firebase akan mengirimkan tautan pemulihan untuk mengatur ulang password baru.")
+                reset_email = st.text_input("Email Akun Anda", key="squad_planner_reset_email")
+                if st.button("Kirim Link Reset Password", key="squad_planner_btn_reset", type="primary", use_container_width=True):
+                    with st.spinner("Mengirim tautan reset..."):
+                        success, msg = reset_password(reset_email)
+                        if success:
+                            st.success(msg)
+                            st.info("💡 **Langkah berikutnya:** Buka email Anda, klik tautan dari Firebase, buat password baru, lalu kembali ke tab **Login** untuk masuk.")
+                        else:
+                            st.error(msg)
+        return  # End execution here, protecting the route.
+    # ---- END PROTECTED ROUTE ----
+
+    # User is logged in, show user info and options
+    col_auth1, col_auth2 = st.columns([3, 1])
+    with col_auth1:
+        st.success(f"Masuk sebagai: **{st.session_state.get('user_email')}**")
+    with col_auth2:
+        if st.button("Logout", key="squad_planner_btn_logout", use_container_width=True):
+            logout_user()
+            st.rerun()
+            
+    with st.expander("⚙️ Keamanan & Ganti Password Akun"):
+        st.write(f"Email akun Anda: **{st.session_state.get('user_email')}**")
+        st.caption("Ingin mengubah atau memperbarui password akun Anda? Klik tombol di bawah untuk menerima link ubah password di inbox email Anda.")
+        if st.button("Kirim Link Ubah Password ke Email Saya", key="btn_auth_change_pw"):
+            with st.spinner("Mengirim tautan ubah password..."):
+                success, msg = reset_password(st.session_state.get("user_email"))
+                if success:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+            
     st.write(
         "Pilih, kelola, dan simpan hingga **3 slot skuad independen** (Slot 1 Utama, Slot 2 Alternatif, Slot 3 Eksperimen). "
         "Bandingkan estimasi **xPoin dari seluruh model prediksi** (Default Model, Option B Component Model, dan Option C Current Season Machine Learning Ensemble), "
@@ -199,9 +332,11 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
 
     # 1. Initialize or maintain session state for 3 squad slots
     if "squad_slots_data" not in st.session_state or "active_slot_id" not in st.session_state or "my_15_squad_slots" not in st.session_state:
-        loaded_active_id, loaded_slots_data = load_all_persisted_squads(players_df)
+        loaded_active_id, loaded_slots_data, loaded_fpl_profile = load_all_persisted_squads(players_df)
         st.session_state["active_slot_id"] = loaded_active_id
         st.session_state["squad_slots_data"] = loaded_slots_data
+        if loaded_fpl_profile:
+            st.session_state["fpl_profile"] = loaded_fpl_profile
         st.session_state["my_15_squad_slots"] = dict(loaded_slots_data[loaded_active_id]["slots"])
         st.session_state["squad_last_saved"] = loaded_slots_data[loaded_active_id].get("updated_at") or "Tersimpan Permanen"
         st.session_state["squad_revision"] = 0
@@ -213,6 +348,363 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
     squad_slots_data = st.session_state.get("squad_slots_data", {})
     squad_slots = st.session_state["my_15_squad_slots"]
     squad_revision = st.session_state.get("squad_revision", 0)
+
+    # =========================================================================
+    # FPL REALTIME SQUAD SYNCHRONIZATION & MANAGER PROFILE
+    # =========================================================================
+    fpl_profile = st.session_state.get("fpl_profile")
+    show_fpl_edit = st.session_state.get("show_fpl_edit_form", False)
+    show_quick_text_sync = st.session_state.get("show_quick_text_sync", False)
+    show_cookie_auth_sync = st.session_state.get("show_cookie_auth_sync", False)
+
+    with st.container():
+        if fpl_profile and not show_fpl_edit:
+            # Connected Status Card
+            fpl_team_name = fpl_profile.get("team_name", "Tim FPL")
+            fpl_mgr_name = fpl_profile.get("manager_name", "Manajer FPL")
+            fpl_team_id = fpl_profile.get("team_id", "-")
+            fpl_overall_pts = fpl_profile.get("overall_points", 0)
+            fpl_overall_rank = fpl_profile.get("overall_rank", 0)
+            fpl_event = fpl_profile.get("current_event", current_gw)
+            is_live_mt = fpl_profile.get("is_live_my_team", False)
+            sync_source = fpl_profile.get("sync_source", "api_public")
+            
+            status_badge_text = "🟢 Terhubung Realtime Akun FPL (Live Pre-Deadline)" if is_live_mt else ("📋 Terhubung via Impor Teks Realtime" if sync_source == "text_import" else "📌 Skuad Terkunci di Deadline GW " + str(fpl_event))
+            
+            st.markdown(
+                f"""
+                <div style="background: linear-gradient(135deg, #064e3b 0%, #0f766e 100%); color: white; padding: 18px 22px; border-radius: 12px; margin-bottom: 14px; box-shadow: 0 4px 12px rgba(15, 118, 110, 0.2);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                        <div>
+                            <span style="background: rgba(255, 255, 255, 0.2); padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">
+                                {status_badge_text}
+                            </span>
+                            <h3 style="margin: 6px 0 2px 0; font-size: 1.35rem; font-weight: 700; color: #ffffff;">{fpl_team_name}</h3>
+                            <p style="margin: 0; font-size: 0.88rem; color: #ccfbf1;">
+                                👤 Manajer: <b>{fpl_mgr_name}</b> | 🆔 ID Tim: <b>#{fpl_team_id}</b>
+                            </p>
+                        </div>
+                        <div style="display: flex; gap: 14px; text-align: center; flex-wrap: wrap;">
+                            <div style="background: rgba(0, 0, 0, 0.25); padding: 8px 14px; border-radius: 8px;">
+                                <div style="font-size: 0.75rem; color: #99f6e4;">Total Poin FPL</div>
+                                <div style="font-size: 1.25rem; font-weight: 800; color: #ffffff;">{fpl_overall_pts:,}</div>
+                            </div>
+                            <div style="background: rgba(0, 0, 0, 0.25); padding: 8px 14px; border-radius: 8px;">
+                                <div style="font-size: 0.75rem; color: #99f6e4;">Peringkat Global</div>
+                                <div style="font-size: 1.25rem; font-weight: 800; color: #ffffff;">#{fpl_overall_rank:,}</div>
+                            </div>
+                            <div style="background: rgba(0, 0, 0, 0.25); padding: 8px 14px; border-radius: 8px;">
+                                <div style="font-size: 0.75rem; color: #99f6e4;">Gameweek</div>
+                                <div style="font-size: 1.25rem; font-weight: 800; color: #ffffff;">GW {fpl_event}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            # Informative notification regarding FPL privacy policy for pre-deadline transfers
+            if not is_live_mt and sync_source != "text_import":
+                with st.expander("ℹ️ **Kenapa pemain hasil transfer baru belum muncul otomatis via ID publik FPL?**", expanded=False):
+                    st.markdown(
+                        f"""
+                        **Aturan Kerahasiaan Transfer FPL Resmi**:
+                        - Premier League **secara resmi merahasiakan** setiap transfer yang Anda lakukan untuk Gameweek mendatang (GW {fpl_event + 1}) dari API publik hingga batas deadline tiba. Hal ini bertujuan agar lawan di mini-league tidak bisa mengintip strategi transfer Anda sebelum pertandingan.
+                        - Endpoint publik `picks` hanya mengembalikan susunan pemain yang telah **terkunci pada deadline GW {fpl_event}**.
+                        - **Solusi untuk memperbarui skuad realtime Anda saat ini**:
+                          1. **📋 Tempel Teks Skuad (Paling Cepat & Mudah)**: Cukup salin 15 nama pemain dari aplikasi/web FPL dan tempel di bawah.
+                          2. **🔐 Gunakan Cookie FPL (`pl_profile`)**: Mengakses data privat `/api/my-team/` langsung dari akun resmi Anda.
+                          3. **⚡ Salin ke Slot 2**: Salin susunan GW {fpl_event} ke Slot 2 dan ganti 1–2 pemain yang baru saja ditransfer.
+                        """
+                    )
+
+            # Quick Action Controls
+            sync_cols = st.columns([2.8, 3.2, 2.5, 2.5])
+            with sync_cols[0]:
+                if st.button("📋 Perbarui via Tempel Teks", key="btn_open_quick_text", use_container_width=True, help="Tempel 15 nama pemain terkini Anda dari FPL"):
+                    st.session_state["show_quick_text_sync"] = not show_quick_text_sync
+                    st.rerun()
+
+            with sync_cols[1]:
+                if st.button("⚡ Salin ke Slot 2 (Perencana Transfer)", key="btn_copy_to_slot_2", type="primary", use_container_width=True, help="Salin susunan pemain realtime Slot 1 ke Slot 2 untuk merencanakan transfer dan rotasi pemain"):
+                    slot1_curr = dict(squad_slots_data["slot_1"]["slots"])
+                    squad_slots_data["slot_2"]["slots"] = slot1_curr
+                    squad_slots_data["slot_2"]["name"] = f"Slot 2 (Rencana Transfer {fpl_team_name})".strip()
+                    squad_slots_data["slot_2"]["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    st.session_state["active_slot_id"] = "slot_2"
+                    st.session_state["my_15_squad_slots"] = slot1_curr
+                    st.session_state["squad_revision"] = st.session_state.get("squad_revision", 0) + 1
+                    save_all_persisted_squads("slot_2", squad_slots_data, fpl_profile=fpl_profile)
+                    st.success(f"✅ Skuad realtime disalin ke Slot 2! Anda sekarang dapat mengganti pemain di Slot 2.")
+                    st.rerun()
+
+            with sync_cols[2]:
+                if st.button("🔄 Tarik Ulang GW Resmi", key="btn_resync_fpl", use_container_width=True, help="Tarik ulang susunan pemain resmi yang terkunci dari server FPL ke Slot 1"):
+                    with st.spinner("Menghubungi server resmi FPL..."):
+                        squad_res, err = fetch_fpl_realtime_squad(fpl_profile["team_id"], current_gw)
+                        if err:
+                            st.error(err)
+                        else:
+                            slots_dict, meta, map_err = map_fpl_picks_to_squad_slots(squad_res["picks"], players_df)
+                            if map_err:
+                                st.error(map_err)
+                            else:
+                                squad_slots_data["slot_1"]["slots"] = slots_dict
+                                squad_slots_data["slot_1"]["name"] = f"Slot 1 (Utama - {fpl_team_name})"
+                                squad_slots_data["slot_1"]["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                fpl_profile["current_event"] = squad_res["resolved_gw"]
+                                fpl_profile["captain_id"] = meta.get("captain_id")
+                                fpl_profile["vice_captain_id"] = meta.get("vice_captain_id")
+                                fpl_profile["is_live_my_team"] = False
+                                fpl_profile["sync_source"] = "api_public"
+                                st.session_state["fpl_profile"] = fpl_profile
+                                if active_slot_id == "slot_1":
+                                    st.session_state["my_15_squad_slots"] = dict(slots_dict)
+                                save_all_persisted_squads(active_slot_id, squad_slots_data, fpl_profile=fpl_profile)
+                                st.success(f"✅ Skuad resmi '{fpl_team_name}' berhasil diperbarui di Slot 1!")
+                                st.rerun()
+
+            with sync_cols[3]:
+                if st.button("⚙️ Ganti Akun / Cookie", key="btn_edit_fpl_creds", use_container_width=True):
+                    st.session_state["show_fpl_edit_form"] = True
+                    st.rerun()
+
+            # Inline Quick Text Matcher Modal / Container
+            if show_quick_text_sync:
+                with st.container():
+                    st.markdown(
+                        """
+                        <div style="background-color: #f0fdf4; border: 1.5px solid #86efac; border-radius: 10px; padding: 14px 18px; margin: 12px 0;">
+                            <h5 style="margin: 0 0 6px 0; color: #166534;">📋 Impor Cepat via Tempel Teks Skuad Realtime</h5>
+                            <p style="margin: 0; font-size: 0.86rem; color: #14532d;">
+                                Salin 15 nama pemain dari aplikasi atau website FPL Anda, lalu tempelkan di kotak bawah. 
+                                Sistem pintar akan otomatis mendeteksi nama pemain, membagi posisi (2 GKP, 5 DEF, 5 MID, 3 FWD), dan langsung memperbarui Slot 1.
+                            </p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                    txt_input_val = st.text_area(
+                        "Daftar 15 Pemain Terkini Anda:",
+                        value="",
+                        height=120,
+                        placeholder="Contoh:\nTrafford, Dubravka\nTarkowski, White, De Cuyper, Calafiori, N.Williams\nSaka, B.Fernandes, Szoboszlai, Gomez, Groß\nIsak, Thiago, João Pedro",
+                        help="Dapat berupa nama dipisahkan koma, baris baru, atau teks hasil copy-paste dari tampilan skuad FPL."
+                    )
+                    txt_btn_c1, txt_btn_c2 = st.columns([3, 2])
+                    with txt_btn_c1:
+                        if st.button("⚡ Pasang Skuad Realtime ke Slot 1", key="btn_submit_quick_text", type="primary", use_container_width=True):
+                            parsed_slots, p_meta, p_err = parse_and_map_squad_from_text(txt_input_val, players_df)
+                            if p_err:
+                                st.error(f"❌ {p_err}")
+                            else:
+                                squad_slots_data["slot_1"]["slots"] = parsed_slots
+                                squad_slots_data["slot_1"]["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                fpl_profile["is_live_my_team"] = True
+                                fpl_profile["sync_source"] = "text_import"
+                                st.session_state["fpl_profile"] = fpl_profile
+                                st.session_state["show_quick_text_sync"] = False
+                                if active_slot_id == "slot_1":
+                                    st.session_state["my_15_squad_slots"] = dict(parsed_slots)
+                                st.session_state["squad_revision"] = st.session_state.get("squad_revision", 0) + 1
+                                save_all_persisted_squads(active_slot_id, squad_slots_data, fpl_profile=fpl_profile)
+                                st.success(f"🎉 Berhasil memetakan {p_meta.get('matched_count', 15)} pemain ke Slot 1!")
+                                st.rerun()
+                    with txt_btn_c2:
+                        if st.button("Tutup Panel Teks", key="btn_close_quick_text", use_container_width=True):
+                            st.session_state["show_quick_text_sync"] = False
+                            st.rerun()
+
+        else:
+            # Connection Form Card with 2 Intuitive Tabs
+            st.markdown(
+                """
+                <div style="background: #f8fafc; border: 2px dashed #94a3b8; padding: 20px 24px; border-radius: 12px; margin-bottom: 16px;">
+                    <h4 style="margin: 0 0 6px 0; color: #1e293b; font-weight: 700;">
+                        🔗 Hubungkan Skuad Realtime FPL Resmi (Live Manager Sync)
+                    </h4>
+                    <p style="margin: 0 0 4px 0; font-size: 0.9rem; color: #475569;">
+                        Tarik susunan 15 pemain tim FPL Anda secara otomatis ke <b>Slot 1</b>. Anda dapat mengetahui proyeksi <b>xPoin skuad resmi Anda</b>, 
+                        lalu menyalinnya ke <b>Slot 2</b> untuk merencanakan transfer dan rotasi pemain.
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            sync_method_tabs = st.tabs([
+                "🌐 Tarik Otomatis via FPL ID / URL",
+                "📋 Impor Cepat via Tempel Teks (Instan & Tanpa Login)"
+            ])
+
+            # TAB 1: SYNC VIA TEAM ID & OPTIONAL COOKIE
+            with sync_method_tabs[0]:
+                inp_c1, inp_c2, inp_c3 = st.columns([4, 3, 3])
+                with inp_c1:
+                    fpl_id_val = st.text_input(
+                        "FPL Team ID atau URL Profil Tim:",
+                        value=str(fpl_profile.get("team_id", "")) if (fpl_profile and show_fpl_edit) else "",
+                        placeholder="Contoh: 2921195 atau https://fantasy.premierleague.com/entry/2921195/event/4",
+                        help="Masukkan angka FPL Team ID Anda atau paste URL laman tim FPL Anda."
+                    )
+                with inp_c2:
+                    fpl_mgr_val = st.text_input(
+                        "Nama Manajer (Opsional):",
+                        value=fpl_profile.get("manager_name", "") if (fpl_profile and show_fpl_edit) else "",
+                        placeholder="Otomatis dari API jika kosong",
+                        help="Nama manajer Anda di FPL. Jika dikosongkan, nama resmi dari profil FPL akan digunakan."
+                    )
+                with inp_c3:
+                    fpl_team_val = st.text_input(
+                        "Nama Tim FPL (Opsional):",
+                        value=fpl_profile.get("team_name", "") if (fpl_profile and show_fpl_edit) else "",
+                        placeholder="Otomatis dari API jika kosong",
+                        help="Nama tim Anda di FPL. Jika dikosongkan, nama resmi dari profil FPL akan digunakan."
+                    )
+
+                # Cookie support for pre-deadline live squad
+                fpl_cookie_val = st.text_input(
+                    "🔑 Cookie Sesi FPL pl_profile (Opsional - Untuk Menarik Transfer Pra-Deadline GW):",
+                    value="",
+                    placeholder="Contoh: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... atau nilai cookie pl_profile Anda",
+                    type="password",
+                    help="FPL merahasiakan transfer yang dibuat sebelum deadline dari publik. Jika Anda memasukkan cookie sesi pl_profile Anda, aplikasi dapat menarik transfer GW5 langsung dari endpoint privat /api/my-team/."
+                )
+
+                with st.expander("❓ Cara Cepat Mengetahui FPL Team ID & Mengapa Transfer Belum Muncul di API Publik"):
+                    st.markdown(
+                        """
+                        **1. Mengetahui FPL Team ID**:
+                        - Buka situs resmi [fantasy.premierleague.com](https://fantasy.premierleague.com) dan login ke akun Anda.
+                        - Masuk ke menu **Points** atau **Pick Team**.
+                        - Perhatikan URL pada browser Anda: `https://fantasy.premierleague.com/entry/XXXXXXX/event/...`
+                        - Angka setelah `/entry/` (misalnya **`2921195`**) adalah **FPL Team ID** Anda!
+                        
+                        **2. Mengapa Hasil Tarikan Tanpa Cookie Menampilkan GW 4?**:
+                        - Di FPL resmi, **Premier League sengaja merahasiakan seluruh transfer sebelum deadline** dari publik agar lawan di liga Anda tidak bisa melihat transfer rahasia Anda.
+                        - Endpoint publik hanya menampilkan susunan resmi yang terkunci pada deadline terakhir (GW 4).
+                        - **Jika Anda tidak ingin repot mencari cookie**, gunakan tab **'📋 Impor Cepat via Tempel Teks'** di samping untuk memasukkan 15 nama pemain saat ini secara instan!
+                        """
+                    )
+
+                btn_fpl_cols = st.columns([3, 2])
+                with btn_fpl_cols[0]:
+                    if st.button("🚀 Tarik Skuad FPL ke Slot 1", key="btn_do_fpl_sync", type="primary", use_container_width=True):
+                        parsed_id = parse_fpl_team_id(fpl_id_val)
+                        if not parsed_id:
+                            st.error("❌ FPL Team ID tidak valid. Mohon masukkan angka Team ID atau paste URL profil tim FPL yang benar.")
+                        else:
+                            with st.spinner(f"Menghubungi server resmi FPL untuk Tim #{parsed_id}..."):
+                                squad_res, err = fetch_fpl_realtime_squad(parsed_id, current_gw, cookie_str=fpl_cookie_val)
+                                if err:
+                                    st.error(f"❌ {err}")
+                                else:
+                                    profile = squad_res["profile"]
+                                    team_name = fpl_team_val.strip() if fpl_team_val.strip() else profile["team_name"]
+                                    mgr_name = fpl_mgr_val.strip() if fpl_mgr_val.strip() else profile["manager_name"]
+                                    profile["team_name"] = team_name
+                                    profile["manager_name"] = mgr_name
+                                    profile["current_event"] = squad_res["resolved_gw"]
+                                    profile["is_live_my_team"] = squad_res.get("is_live_my_team", False)
+                                    profile["sync_source"] = "api_authenticated" if squad_res.get("is_live_my_team") else "api_public"
+
+                                    slots_dict, meta, map_err = map_fpl_picks_to_squad_slots(squad_res["picks"], players_df)
+                                    if map_err:
+                                        st.error(f"❌ {map_err}")
+                                    else:
+                                        profile["captain_id"] = meta.get("captain_id")
+                                        profile["vice_captain_id"] = meta.get("vice_captain_id")
+                                        st.session_state["fpl_profile"] = profile
+                                        st.session_state["show_fpl_edit_form"] = False
+
+                                        # Update slot 1
+                                        squad_slots_data["slot_1"]["slots"] = slots_dict
+                                        squad_slots_data["slot_1"]["name"] = f"Slot 1 (Utama - {team_name})"
+                                        squad_slots_data["slot_1"]["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                                        # Set active to slot 1
+                                        st.session_state["active_slot_id"] = "slot_1"
+                                        st.session_state["my_15_squad_slots"] = dict(slots_dict)
+                                        st.session_state["squad_revision"] = st.session_state.get("squad_revision", 0) + 1
+
+                                        save_all_persisted_squads("slot_1", squad_slots_data, fpl_profile=profile)
+                                        success_msg = f"🎉 Berhasil terhubung ke tim '{team_name}' ({mgr_name})!"
+                                        if profile["is_live_my_team"]:
+                                            success_msg += " (Data realtime akun FPL termasuk transfer pra-deadline telah ditarik ke Slot 1)."
+                                        else:
+                                            success_msg += f" (Susunan resmi deadline GW {profile['current_event']} telah ditarik ke Slot 1)."
+                                        st.success(success_msg)
+                                        st.rerun()
+
+                with btn_fpl_cols[1]:
+                    if show_fpl_edit and st.button("Batal / Kembali", key="btn_cancel_fpl_edit", use_container_width=True):
+                        st.session_state["show_fpl_edit_form"] = False
+                        st.rerun()
+
+            # TAB 2: SMART TEXT IMPORT (INSTANT & ZERO-SETUP)
+            with sync_method_tabs[1]:
+                st.markdown(
+                    """
+                    <div style="background-color: #f0fdf4; border: 1.5px solid #86efac; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px;">
+                        <span style="font-weight: 700; color: #166534; font-size: 0.95rem;">💡 Impor Skuad Terkini Tanpa Login / Tanpa Cookie</span>
+                        <p style="margin: 4px 0 0 0; font-size: 0.85rem; color: #14532d;">
+                            Jika Anda baru saja melakukan transfer pemain untuk Gameweek depan dan ingin segera menganalisisnya: 
+                            cukup salin atau ketik nama 15 pemain Anda di kotak teks di bawah. Sistem akan mencocokkan setiap pemain ke database dan menempatkannya ke formasi Slot 1.
+                        </p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+                
+                t_col1, t_col2 = st.columns(2)
+                with t_col1:
+                    paste_team_name = st.text_input("Nama Tim Anda:", value=fpl_profile.get("team_name", "Tim FPL") if fpl_profile else "rdjm")
+                with t_col2:
+                    paste_mgr_name = st.text_input("Nama Manajer:", value=fpl_profile.get("manager_name", "Manajer FPL") if fpl_profile else "Richard Dimas")
+
+                paste_squad_text = st.text_area(
+                    "Tempelkan 15 Nama Pemain Skuad Anda:",
+                    value="",
+                    height=130,
+                    placeholder="Contoh:\nTrafford, Dubravka\nTarkowski, White, De Cuyper, Calafiori, N.Williams\nSaka, B.Fernandes, Szoboszlai, Gomez, Groß\nIsak, Thiago, João Pedro",
+                    help="Bisa dipisahkan koma atau baris baru. Nama klub atau tanda kurung akan otomatis dibersihkan oleh sistem."
+                )
+
+                if st.button("🚀 Pasang Skuad Realtime ke Slot 1", key="btn_do_text_sync", type="primary", use_container_width=True):
+                    parsed_slots, p_meta, p_err = parse_and_map_squad_from_text(paste_squad_text, players_df)
+                    if p_err:
+                        st.error(f"❌ {p_err}")
+                    else:
+                        profile = fpl_profile or {}
+                        profile["team_name"] = paste_team_name.strip() if paste_team_name.strip() else "Tim FPL"
+                        profile["manager_name"] = paste_mgr_name.strip() if paste_mgr_name.strip() else "Manajer FPL"
+                        profile["is_live_my_team"] = True
+                        profile["sync_source"] = "text_import"
+                        if "team_id" not in profile:
+                            profile["team_id"] = "Custom"
+                        if "overall_points" not in profile:
+                            profile["overall_points"] = 0
+                        if "overall_rank" not in profile:
+                            profile["overall_rank"] = 0
+                        profile["current_event"] = current_gw
+
+                        st.session_state["fpl_profile"] = profile
+                        st.session_state["show_fpl_edit_form"] = False
+
+                        squad_slots_data["slot_1"]["slots"] = parsed_slots
+                        squad_slots_data["slot_1"]["name"] = f"Slot 1 (Utama - {profile['team_name']})"
+                        squad_slots_data["slot_1"]["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                        st.session_state["active_slot_id"] = "slot_1"
+                        st.session_state["my_15_squad_slots"] = dict(parsed_slots)
+                        st.session_state["squad_revision"] = st.session_state.get("squad_revision", 0) + 1
+
+                        save_all_persisted_squads("slot_1", squad_slots_data, fpl_profile=profile)
+                        st.success(f"🎉 Berhasil memasang {p_meta.get('matched_count', 15)} pemain realtime ke Slot 1!")
+                        st.rerun()
+
+    st.markdown("---")
 
     # =========================================================================
     # 3 SAVE SLOTS UI SELECTOR & OVERVIEW
@@ -469,6 +961,123 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
     if total_cost > 100.0:
         st.warning(f"⚠️ **Melebihi Anggaran**: Total biaya skuad £{total_cost:.1f}m melebihi pagu standar £100.0m sebesar £{abs(budget_rem):.1f}m.")
 
+    # =========================================================================
+    # TRANSFER PLANNER: REALTIME SQUAD (SLOT 1) VS PLANNED SQUAD (SLOT 2)
+    # =========================================================================
+    slot1_info = squad_slots_data.get("slot_1", {})
+    slot2_info = squad_slots_data.get("slot_2", {})
+    s1_slots = slot1_info.get("slots", {})
+    s2_slots = slot2_info.get("slots", {})
+
+    if active_slot_id == "slot_2" or (active_slot_id != "slot_1" and len(s1_slots) == 15 and len(s2_slots) == 15):
+        if len(s1_slots) == 15 and len(s2_slots) == 15:
+            transfer_delta = calculate_squad_transfer_delta(s1_slots, s2_slots, df_merged)
+            tf_count = transfer_delta["transfers_count"]
+
+            st.markdown(
+                f"""
+                <div style="background-color: #f8fafc; border: 1.5px solid #94a3b8; border-radius: 12px; padding: 16px 20px; margin-top: 14px; margin-bottom: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                        <div>
+                            <span style="font-weight: 700; font-size: 1.15rem; color: #0f172a;">
+                                🔄 Perencana Transfer: Komparasi Slot 1 vs Slot 2
+                            </span>
+                            <div style="font-size: 0.85rem; color: #64748b; margin-top: 2px;">
+                                Slot 1: <b>{slot1_info.get('name', 'Realtime FPL')}</b> ➔ Slot 2: <b>{slot2_info.get('name', 'Rencana Transfer')}</b>
+                            </div>
+                        </div>
+                        <span style="background-color: {'#dbeafe' if tf_count > 0 else '#f1f5f9'}; color: {'#1d4ed8' if tf_count > 0 else '#64748b'}; padding: 6px 14px; border-radius: 20px; font-size: 0.85rem; font-weight: 700;">
+                            {tf_count} Transfer Direncanakan
+                        </span>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            if tf_count == 0:
+                st.info(
+                    "ℹ️ **Susunan pemain di Slot 2 saat ini identik dengan Slot 1.** "
+                    "Gunakan panel di bawah untuk mengganti pemain yang ingin Anda rotasi atau transfer keluar. "
+                    "Aplikasi akan secara otomatis membandingkan delta xPoin, penghematan anggaran, dan tingkat kesulitan jadwal (FDR)."
+                )
+            else:
+                t_col1, t_col2 = st.columns(2)
+                with t_col1:
+                    st.markdown("###### 🔴 Pemain Keluar (Transfer OUT):")
+                    for p in transfer_delta["players_out"]:
+                        p_cost = float(p.get('Harga (£m)', 0.0))
+                        p_xp = float(p.get('xPoin', 0.0))
+                        p_club = p.get('Klub', '')
+                        p_name = p.get('Nama Pemain', '')
+                        st.markdown(
+                            f"""
+                            <div style="background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <span style="font-weight: 700; color: #991b1b;">{p_name}</span>
+                                    <span style="font-size: 0.8rem; color: #7f1d1d; margin-left: 6px;">({p_club})</span>
+                                </div>
+                                <div style="font-size: 0.85rem; font-weight: 600; color: #b91c1c;">
+                                    £{p_cost:.1f}m | xPoin: {p_xp:.2f}
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                with t_col2:
+                    st.markdown("###### 🟢 Pemain Masuk (Transfer IN):")
+                    for p in transfer_delta["players_in"]:
+                        p_cost = float(p.get('Harga (£m)', 0.0))
+                        p_xp = float(p.get('xPoin', 0.0))
+                        p_club = p.get('Klub', '')
+                        p_name = p.get('Nama Pemain', '')
+                        st.markdown(
+                            f"""
+                            <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <span style="font-weight: 700; color: #166534;">{p_name}</span>
+                                    <span style="font-size: 0.8rem; color: #14532d; margin-left: 6px;">({p_club})</span>
+                                </div>
+                                <div style="font-size: 0.85rem; font-weight: 600; color: #15803d;">
+                                    £{p_cost:.1f}m | xPoin: {p_xp:.2f}
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                # Performance Delta Metrics
+                d_c1, d_c2, d_c3, d_c4 = st.columns(4)
+                with d_c1:
+                    dxp = transfer_delta["delta_xp_consensus"]
+                    dxp_color = "normal" if dxp >= 0 else "inverse"
+                    dxp_sign = "+" if dxp >= 0 else ""
+                    st.metric("Δ Konsensus xPoin", f"{dxp_sign}{dxp:.2f} pts", delta=f"{dxp_sign}{dxp:.2f} pts", delta_color=dxp_color)
+                with d_c2:
+                    dcost = transfer_delta["delta_cost"]
+                    dcost_sign = "+" if dcost >= 0 else ""
+                    dcost_color = "inverse" if dcost > 0 else "normal"
+                    st.metric("Δ Biaya Transfer", f"{dcost_sign}£{dcost:.1f}m", delta=f"{dcost_sign}£{dcost:.1f}m", delta_color=dcost_color)
+                with d_c3:
+                    dfdr = transfer_delta["delta_fdr"]
+                    dfdr_sign = "+" if dfdr >= 0 else ""
+                    dfdr_label = "Jadwal Lebih Mudah" if dfdr < 0 else ("Jadwal Lebih Sulit" if dfdr > 0 else "Netral")
+                    st.metric("Δ Rata-rata FDR10", f"{dfdr_sign}{dfdr:.2f}", delta=dfdr_label, delta_color="inverse" if dfdr > 0 else "normal")
+                with d_c4:
+                    if tf_count <= 1:
+                        st.metric("Estimasi Transfer Hit", "0 Poin", delta="Dalam 1 Free Transfer", delta_color="normal")
+                    else:
+                        hit_cost = (tf_count - 1) * 4
+                        st.metric("Estimasi Transfer Hit", f"-{hit_cost} Poin", delta=f"Jika punya 1 FT (-4 pts/extra)", delta_color="inverse")
+
+    elif active_slot_id == "slot_1" and fpl_profile:
+        st.info(
+            f"💡 **Tips Perencana Transfer**: Saat ini Anda sedang membuka **Slot 1 (Skuad Realtime FPL Resmi)**. "
+            f"Untuk mencoba skenario transfer masuk/keluar tanpa mengubah susunan skuad asli, "
+            f"klik tombol **'⚡ Salin ke Slot 2 (Perencana Transfer)'** di bagian atas."
+        )
+
     # 3. INTERACTIVE SECTION: MEMILIH & MENGGANTI 15 PEMAIN
     with st.expander("🛠️ **Panel Penggantian Pemain (Ganti Pemain di Setiap Slot)**", expanded=True):
         st.write("Ubah pemain pada salah satu dari 15 slot di bawah. Daftar pilihan otomatis disaring sesuai posisi slot.")
@@ -613,6 +1222,11 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
                 st.write("")
                 if st.button("🚀 Konfirmasi Ganti", use_container_width=True):
                     st.session_state["my_15_squad_slots"][swap_slot_choice] = replacement_choice
+                    act_slot = st.session_state.get("active_slot_id", "slot_1")
+                    sl_data = st.session_state.get("squad_slots_data", {})
+                    if act_slot in sl_data:
+                        sl_data[act_slot]["slots"][swap_slot_choice] = replacement_choice
+                        sl_data[act_slot]["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     st.session_state["squad_revision"] = st.session_state.get("squad_revision", 0) + 1
                     save_persisted_squad(st.session_state["my_15_squad_slots"])
                     st.success(f"Berhasil mengganti pemain di slot {swap_slot_choice}!")
@@ -636,6 +1250,22 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
         st.info(f"👑 **Rekomendasi Kapten (©)**: **{top_captain['Nama Pemain']}** ({top_captain['Klub']}) - Konsensus xPoin: **{top_captain['Konsensus xPoin']:.2f} pts** (Default: {top_captain['xPoin']:.2f} | Opt B: {top_captain['xPoin (Option B)']:.2f} | Opt C: {top_captain['xPoin (Option C Ensemble)']:.2f})")
     with cap_col2:
         st.info(f"🥈 **Rekomendasi Wakil Kapten (Ⓥ)**: **{top_vc['Nama Pemain']}** ({top_vc['Klub']}) - Konsensus xPoin: **{top_vc['Konsensus xPoin']:.2f} pts** (Default: {top_vc['xPoin']:.2f} | Opt B: {top_vc['xPoin (Option B)']:.2f} | Opt C: {top_vc['xPoin (Option C Ensemble)']:.2f})")
+
+    # Compare official FPL captain with predictor recommendation if available
+    official_cap_id = fpl_profile.get("captain_id") if fpl_profile else None
+    if official_cap_id and not squad_df[squad_df['id'] == official_cap_id].empty:
+        off_cap_row = squad_df[squad_df['id'] == official_cap_id].iloc[0]
+        if off_cap_row['id'] != top_captain['id']:
+            diff_pts = top_captain['Konsensus xPoin'] - off_cap_row['Konsensus xPoin']
+            st.warning(
+                f"⚠️ **Evaluasi Kapten FPL**: Kapten resmi tim Anda di FPL saat ini adalah **{off_cap_row['Nama Pemain']}** "
+                f"({off_cap_row['Klub']} - Konsensus: **{off_cap_row['Konsensus xPoin']:.2f} pts**). "
+                f"Model memprediksi **{top_captain['Nama Pemain']}** berpotensi menghasilkan **+{diff_pts:.2f} pts** lebih tinggi."
+            )
+        else:
+            st.success(
+                f"🎯 **Pilihan Kapten Selaras**: Kapten resmi Anda di FPL (**{off_cap_row['Nama Pemain']}**) telah sesuai dengan pilihan algoritma proyeksi xPoin tertinggi!"
+            )
 
     # View options
     sort_squad_by = st.selectbox(
