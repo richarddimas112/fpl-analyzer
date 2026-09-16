@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
+from src.auth import login_user, register_user, logout_user
+
 from src.constants import (
     BOOTSTRAP_URL, FIXTURES_URL, ELEMENT_SUMMARY_URL,
     POSITION_MAP, STATUS_MAP, POS_MODEL_CONFIGS
@@ -13,7 +15,11 @@ from src.api import (
 from src.processors import (
     get_current_gw, load_historical_training_data, format_setpiece_order,
     calculate_team_fdrs, calculate_team_strength_analysis,
-    compute_all_l5m_avg_mins, process_players
+    compute_all_l5m_avg_mins, process_players, apply_team_differentials_and_recalc_option_b
+)
+from src.firebase_client import (
+    fetch_gw_differentials_from_firestore, compute_differentials_for_gw,
+    is_gw4_finished, sync_historical_gw1_to_gw4, auto_sync_next_gw_differentials
 )
 from src.models import (
     perform_classical_assumption_tests, check_setpiece_taker,
@@ -371,24 +377,64 @@ def main():
         fpl_data.get('elements', []), fdr_summary, current_gw, df_historical
     )
 
-    # Train Option B Match xG & xA Models (Option B)
-    opt_b_model_xg, opt_b_model_xa, stats_xg, stats_xa = train_option_b_models(
-        fpl_data.get('elements', []), fdr_summary, current_gw, df_historical
-    )
-
-    # Process Player Dataset
+    # Process Player Dataset (Without Option B models first to calculate team strength)
     players_df, team_dict = process_players(
-        fpl_data, fdr_summary, models_dict, _opt_b_models=(opt_b_model_xg, opt_b_model_xa)
+        fpl_data, fdr_summary, models_dict, _opt_b_models=None
     )
 
     if players_df.empty:
         st.warning("Data pemain tidak ditemukan.")
         return
 
+    # Calculate comprehensive team strength analysis once for shared use
+    df_teams = calculate_team_strength_analysis(fpl_data, players_df, fdr_summary)
+
+    # Train Option B Match xG & xA Models (Option B) using calculated team strengths
+    opt_b_model_xg, opt_b_model_xa, stats_xg, stats_xa = train_option_b_models(
+        fpl_data.get('elements', []), fdr_summary, current_gw, df_historical, _df_teams=df_teams
+    )
+
+    # -------------------------------------------------------------------------
+    # GAMEWEEK DIFFERENTIAL & FIREBASE FIRESTORE SYNC
+    # -------------------------------------------------------------------------
+    current_gw_num = int(current_gw.get('id', 4) if isinstance(current_gw, dict) else current_gw)
+    
+    # We want Option B models (player table) to predict for the *next upcoming unplayed match*
+    # So we use current_gw_num + 1 if current_gw_num is partially active, but FPL usually marks the 'next' GW
+    # To align with Tab Fixtures (which looks ahead), we should compute differentials for the next GW the player will play.
+    # We'll use the 'Next_Is_Home' opponent data already in players_df, so we just compute diffs for the 'next' match directly.
+    
+    # We'll compute the differential on the fly based on the opponent they face next (which is in their 'Opponent_xGC_per_90' etc)
+    # The 'compute_differentials_for_gw' is specific to a GW, but players might have blank/double GWs.
+    # However, to fix the immediate issue of Option B showing GW4 diffs instead of GW5, we can fetch GW5 diffs if we know it's next.
+    
+    is_current = current_gw.get('is_current', True) if isinstance(current_gw, dict) else True
+    next_gw_num = current_gw_num + 1 if is_current else current_gw_num
+    
+    fs_gw_data = fetch_gw_differentials_from_firestore(next_gw_num)
+    if fs_gw_data and fs_gw_data.get('team_differentials'):
+        team_diffs_predict = fs_gw_data['team_differentials']
+    else:
+        team_diffs_predict, _ = compute_differentials_for_gw(next_gw_num, fixtures_data, df_teams, teams_dict)
+
+    # Enrich players_df with Diff Attack Team & Diff Defense Team and calibrate Option B for the NEXT match
+    players_df = apply_team_differentials_and_recalc_option_b(
+        players_df, team_diffs_predict, _opt_b_models=(opt_b_model_xg, opt_b_model_xa)
+    )
+    
+    # Auto-sync next GW if current GW is finished (robust check for current and previous)
+    if current_gw_num > 1:
+        auto_sync_next_gw_differentials(current_gw_num - 1, fixtures_data, df_teams, teams_dict)
+    auto_sync_next_gw_differentials(current_gw_num, fixtures_data, df_teams, teams_dict)
+    # We can silently ignore if not finished or already saved, to avoid spamming the user
+
     # -------------------------------------------------------------------------
     # SIDEBAR QUICK NAVIGATION & FILTERS
     # -------------------------------------------------------------------------
     render_sidebar_quick_nav()
+    
+    
+
     st.sidebar.header("🔍 Filter Pemain FPL")
 
     # Search Bar
@@ -479,9 +525,6 @@ def main():
     # Pre-fetch Option C data for multi-option comparison (cached)
     df_opt_c, _ = build_option_c_model_and_view(fpl_data, fdr_summary, current_gw)
 
-    # Calculate comprehensive team strength analysis once for shared use
-    df_teams = calculate_team_strength_analysis(fpl_data, players_df, fdr_summary)
-
     def render_content_by_id(mod_id):
         if mod_id == "player_stats":
             render_tab_player_stats(filtered_players, players_df, models_dict, fpl_data, teams_dict, fdr_summary=fdr_summary)
@@ -493,7 +536,10 @@ def main():
             filtered_player_ids = set(filtered_players['id'].tolist()) if 'id' in filtered_players.columns else None
             render_tab_hidden_gem(fpl_data, fdr_summary, current_gw, filtered_player_ids=filtered_player_ids, teams_dict=teams_dict)
         elif mod_id == "option_b":
-            render_tab_option_b(filtered_players, stats_xg, stats_xa)
+            render_tab_option_b(
+                filtered_players, stats_xg, stats_xa,
+                df_teams=df_teams, fixtures=fixtures_data, teams_dict=teams_dict, current_gw=current_gw_num
+            )
         elif mod_id == "option_c":
             render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=filtered_players, price_range=price_range, df_option_c=df_opt_c)
         elif mod_id == "team_strength":
