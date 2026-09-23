@@ -4,6 +4,7 @@ Ultra-polished, responsive Fixture Matrix, Interactive Ticker, Matchday Hub with
 """
 
 from datetime import datetime, timedelta
+import textwrap
 import pandas as pd
 import streamlit as st
 from src.processors import get_team_short_map
@@ -741,7 +742,10 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                                 </div>
                             </div>
                             """
-                            st.markdown(card_html, unsafe_allow_html=True)
+                            if hasattr(st, 'html'):
+                                st.html(card_html)
+                            else:
+                                st.markdown(textwrap.dedent(card_html), unsafe_allow_html=True)
 
                             # Quick Pop-up Modal Launchers (Buka di halaman yg sama, tidak pindah halaman)
                             col_b1, col_b2 = st.columns(2)
@@ -845,13 +849,13 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
     with tab_matrix:
         # Strategic Fixture Insights & Swing Highlights
         clubs_ranked_fdr3 = sorted(
-            [{'id': tid, 'name': teams_dict.get(tid, f"Team {tid}"), 'fdr': f['FDR3'], 'fdr5': f['FDR5'], 'fdr10': f['FDR10'], 'next': f.get('Next_Opponent_Fmt', '-')} 
+            [{'id': tid, 'name': teams_dict.get(tid, f"Team {tid}"), 'fdr': float(f.get('FDR3', 3.0) or 3.0), 'fdr5': float(f.get('FDR5', 3.0) or 3.0), 'fdr10': float(f.get('FDR10', 3.0) or 3.0), 'next': f.get('Next_Opponent_Fmt', '-')} 
              for tid, f in fdr_summary.items()],
             key=lambda x: x['fdr']
         )
 
-        top_easy_3 = clubs_ranked_fdr3[:3]
-        top_hard_3 = clubs_ranked_fdr3[-3:][::-1]
+        top_easy_3 = clubs_ranked_fdr3[:3] if clubs_ranked_fdr3 else []
+        top_hard_3 = clubs_ranked_fdr3[-3:][::-1] if len(clubs_ranked_fdr3) >= 3 else clubs_ranked_fdr3[::-1]
 
         st.markdown("##### ⚡ Ringkasan Strategi Fixture Run (3-5 Laga Mendatang)")
         c_easy, c_hard, c_rot = st.columns([1.2, 1.2, 1.6])
@@ -859,7 +863,7 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
         with c_easy:
             easy_list_html = "".join([
                 f"<div style='display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #f1f5f9; font-size: 0.85rem;'>"
-                f"<div><strong style='color: #0f172a;'>{c['name']}</strong><div style='font-size: 0.75rem; color: #64748b;'>Lawan: {c['next']}</div></div>"
+                f"<div><strong style='color: #0f172a;'>{c['name']}</strong><div style='font-size: 0.75rem; color: #64748b;'>Lawan: {c.get('next', '-')}</div></div>"
                 f"<div style='background: #dcfce7; color: #166534; padding: 2px 8px; border-radius: 6px; font-weight: 700; font-size: 0.8rem;'>FDR3: {c['fdr']:.2f}</div>"
                 f"</div>"
                 for c in top_easy_3
@@ -871,14 +875,14 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                     <strong style="color: #166534; font-size: 0.92rem;">Jadwal Paling Menguntungkan</strong>
                 </div>
                 <div style="font-size: 0.78rem; color: #64748b; margin-bottom: 8px;">Target transfer utama untuk aset ofensif & defensif:</div>
-                {easy_list_html}
+                {easy_list_html if easy_list_html else "<div style='color: #94a3b8; font-size: 0.8rem;'>Data tidak tersedia</div>"}
             </div>
             """, unsafe_allow_html=True)
 
         with c_hard:
             hard_list_html = "".join([
                 f"<div style='display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #f1f5f9; font-size: 0.85rem;'>"
-                f"<div><strong style='color: #0f172a;'>{c['name']}</strong><div style='font-size: 0.75rem; color: #64748b;'>Lawan: {c['next']}</div></div>"
+                f"<div><strong style='color: #0f172a;'>{c['name']}</strong><div style='font-size: 0.75rem; color: #64748b;'>Lawan: {c.get('next', '-')}</div></div>"
                 f"<div style='background: #fee2e2; color: #991b1b; padding: 2px 8px; border-radius: 6px; font-weight: 700; font-size: 0.8rem;'>FDR3: {c['fdr']:.2f}</div>"
                 f"</div>"
                 for c in top_hard_3
@@ -890,7 +894,7 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                     <strong style="color: #991b1b; font-size: 0.92rem;">Jadwal Paling Menantang</strong>
                 </div>
                 <div style="font-size: 0.78rem; color: #64748b; margin-bottom: 8px;">Waspadai penurunan poin / pertimbangkan rotasi:</div>
-                {hard_list_html}
+                {hard_list_html if hard_list_html else "<div style='color: #94a3b8; font-size: 0.8rem;'>Data tidak tersedia</div>"}
             </div>
             """, unsafe_allow_html=True)
 
@@ -926,7 +930,10 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                 default="5 Laga (Wildcard)",
                 key="fdr_horizon_pills"
             )
-            horizon_n = 3 if "3 Laga" in horizon_choice else (5 if "5 Laga" in horizon_choice else 10)
+            # Safe fallback if user deselects the pill
+            if not horizon_choice:
+                horizon_choice = "5 Laga (Wildcard)"
+            horizon_n = 3 if "3 Laga" in str(horizon_choice) else (10 if "10 Laga" in str(horizon_choice) else 5)
             active_fdr_key = f"fdr{horizon_n}"
             active_fdr_label = f"FDR{horizon_n}"
 
@@ -966,6 +973,8 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                 index=0,
                 key=f"sort_matrix_sel_{active_fdr_key}"
             )
+            if not sort_matrix_opt:
+                sort_matrix_opt = f"Tingkat Kemudahan ({active_fdr_label} Terendah)"
 
         with c_view:
             view_mode = st.radio(
@@ -979,44 +988,49 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
         big_six = ["Arsenal", "Chelsea", "Liverpool", "Manchester City", "Man City", "Manchester United", "Man Utd", "Tottenham", "Tottenham Hotspur", "Spurs"]
 
         if preset_choice == "🟢 Top 5 Jadwal Paling Mudah (Run Hijau)":
-            filtered_items = sorted(filtered_items, key=lambda x: x[active_fdr_key])[:5]
+            filtered_items = sorted(filtered_items, key=lambda x: float(x.get(active_fdr_key, 3.0) or 3.0))[:5]
         elif preset_choice == "🔴 Top 5 Jadwal Paling Sulit (Run Merah)":
-            filtered_items = sorted(filtered_items, key=lambda x: x[active_fdr_key], reverse=True)[:5]
+            filtered_items = sorted(filtered_items, key=lambda x: float(x.get(active_fdr_key, 3.0) or 3.0), reverse=True)[:5]
         elif preset_choice == "👑 Big Six Premier League":
-            filtered_items = [it for it in filtered_items if any(b.lower() in it['club'].lower() for b in big_six)]
+            filtered_items = [it for it in filtered_items if any(b.lower() in str(it.get('club', '')).lower() for b in big_six)]
         elif preset_choice == "🏠 Klub Terbanyak Laga Kandang (Home Run)":
             filtered_items = sorted(
                 filtered_items, 
-                key=lambda x: sum(1 for m in x['matches'][:horizon_n] if m.get('ha') == 'H'), 
+                key=lambda x: sum(1 for m in x.get('matches', [])[:horizon_n] if m.get('ha') == 'H'), 
                 reverse=True
             )[:7]
 
         if selected_clubs_filter:
-            filtered_items = [it for it in filtered_items if it['club'] in selected_clubs_filter]
+            filtered_items = [it for it in filtered_items if it.get('club') in selected_clubs_filter]
 
-        if "Terendah" in sort_matrix_opt:
-            filtered_items = sorted(filtered_items, key=lambda x: x[active_fdr_key])
-        elif "Tertinggi" in sort_matrix_opt:
-            filtered_items = sorted(filtered_items, key=lambda x: x[active_fdr_key], reverse=True)
-        elif "Paling Banyak Laga Kandang" in sort_matrix_opt:
-            filtered_items = sorted(filtered_items, key=lambda x: sum(1 for m in x['matches'][:horizon_n] if m.get('ha') == 'H'), reverse=True)
-        elif "Nama Klub" in sort_matrix_opt:
-            filtered_items = sorted(filtered_items, key=lambda x: x['club'])
+        if sort_matrix_opt and "Terendah" in sort_matrix_opt:
+            filtered_items = sorted(filtered_items, key=lambda x: float(x.get(active_fdr_key, 3.0) or 3.0))
+        elif sort_matrix_opt and "Tertinggi" in sort_matrix_opt:
+            filtered_items = sorted(filtered_items, key=lambda x: float(x.get(active_fdr_key, 3.0) or 3.0), reverse=True)
+        elif sort_matrix_opt and "Paling Banyak Laga Kandang" in sort_matrix_opt:
+            filtered_items = sorted(filtered_items, key=lambda x: sum(1 for m in x.get('matches', [])[:horizon_n] if m.get('ha') == 'H'), reverse=True)
+        elif sort_matrix_opt and "Nama Klub" in sort_matrix_opt:
+            filtered_items = sorted(filtered_items, key=lambda x: str(x.get('club', '')))
 
-        legend_html = f"""
-        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 14px 0; padding: 10px 14px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 0.8rem;">
-            <strong style="color: #1e293b;">Legenda Tingkat Kesulitan (FDR):</strong>
-            <span style="background: #15803d; color: white; padding: 2px 8px; border-radius: 4px; font-weight: 700;">1 Sangat Mudah</span>
-            <span style="background: #10b981; color: white; padding: 2px 8px; border-radius: 4px; font-weight: 700;">2 Mudah</span>
-            <span style="background: #64748b; color: white; padding: 2px 8px; border-radius: 4px; font-weight: 700;">3 Netral</span>
-            <span style="background: #f59e0b; color: white; padding: 2px 8px; border-radius: 4px; font-weight: 700;">4 Sulit</span>
-            <span style="background: #ef4444; color: white; padding: 2px 8px; border-radius: 4px; font-weight: 700;">5 Sangat Sulit</span>
-            <span style="color: #64748b; margin-left: auto; font-style: italic;">Huruf Kapital (H) = Home / Kandang, (A) = Away / Tandang</span>
-        </div>
-        """
-        st.markdown(legend_html, unsafe_allow_html=True)
+        legend_html = (
+            '<div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 14px 0; padding: 10px 14px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 0.8rem;">'
+            '<strong style="color: #1e293b;">Legenda Tingkat Kesulitan (FDR):</strong> '
+            '<span style="background: #15803d; color: white; padding: 2px 8px; border-radius: 4px; font-weight: 700;">1 Sangat Mudah</span> '
+            '<span style="background: #10b981; color: white; padding: 2px 8px; border-radius: 4px; font-weight: 700;">2 Mudah</span> '
+            '<span style="background: #64748b; color: white; padding: 2px 8px; border-radius: 4px; font-weight: 700;">3 Netral</span> '
+            '<span style="background: #f59e0b; color: white; padding: 2px 8px; border-radius: 4px; font-weight: 700;">4 Sulit</span> '
+            '<span style="background: #ef4444; color: white; padding: 2px 8px; border-radius: 4px; font-weight: 700;">5 Sangat Sulit</span> '
+            '<span style="color: #64748b; margin-left: auto; font-style: italic;">Huruf Kapital (H) = Home / Kandang, (A) = Away / Tandang</span>'
+            '</div>'
+        )
+        if hasattr(st, 'html'):
+            st.html(legend_html)
+        else:
+            st.markdown(legend_html, unsafe_allow_html=True)
 
-        if "Blok Warna Visual" in view_mode:
+        if not filtered_items:
+            st.info("⚠️ Tidak ada klub yang sesuai dengan filter yang dipilih. Silakan ubah filter klub atau preset di atas.")
+        elif "Blok Warna Visual" in view_mode:
             table_header_cols = ""
             for idx in range(horizon_n):
                 gw_val = detected_gw_labels[idx] if idx < len(detected_gw_labels) and detected_gw_labels[idx] is not None else None
@@ -1025,82 +1039,104 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
 
             table_rows_html = ""
             for rank, item in enumerate(filtered_items, 1):
-                club_name = item['club']
-                short_code = item['short_name']
-                fdr_val = item[active_fdr_key]
+                club_name = item.get('club', 'TBD')
+                short_code = item.get('short_name', club_name[:3].upper())
+                fdr_val = float(item.get(active_fdr_key, 3.0) or 3.0)
                 
                 fdr_badge_color = "#10b981" if fdr_val <= 2.6 else ("#64748b" if fdr_val <= 3.2 else "#ef4444")
                 fdr_badge_bg = "#ecfdf5" if fdr_val <= 2.6 else ("#f1f5f9" if fdr_val <= 3.2 else "#fef2f2")
 
                 match_blocks_html = ""
-                for m in item['matches'][:horizon_n]:
-                    fdr_diff = m['diff']
+                matches_list = item.get('matches', [])[:horizon_n]
+                for m in matches_list:
+                    try:
+                        fdr_diff = int(round(float(m.get('diff', 3) or 3)))
+                    except Exception:
+                        fdr_diff = 3
                     fdr_meta = FDR_PALETTE.get(fdr_diff, {'bg': '#94a3b8', 'text': '#ffffff'})
-                    ha_badge = m['ha']
-                    opp_label = m['opp_short']
-                    block_tooltip = f"{club_name} vs {m['opp']} ({'Home' if ha_badge == 'H' else 'Away'}) | FDR {fdr_diff}"
+                    ha_badge = str(m.get('ha', '-'))
+                    opp_label = str(m.get('opp_short', 'TBD'))
+                    opp_full = str(m.get('opp', 'TBD'))
+                    gw_num = m.get('gw')
+                    gw_tag = f"GW{gw_num}" if gw_num else ""
+                    block_tooltip = f"{club_name} vs {opp_full} ({'Home' if ha_badge == 'H' else 'Away'}) | {gw_tag} | FDR {fdr_diff}"
                     
-                    match_blocks_html += f"""
-                    <td style="padding: 4px 3px; text-align: center;">
-                        <div title="{block_tooltip}" style="background-color: {fdr_meta['bg']}; color: {fdr_meta['text']}; font-weight: 700; border-radius: 6px; padding: 6px 2px; font-size: 0.76rem; box-shadow: 0 1px 2px rgba(0,0,0,0.08); transition: transform 0.1s ease; cursor: default;">
-                            <div>{opp_label}</div>
-                            <div style="font-size: 0.65rem; opacity: 0.9; font-weight: 600;">({ha_badge})</div>
-                        </div>
-                    </td>
-                    """
+                    match_blocks_html += (
+                        f"<td style='padding: 4px 3px; text-align: center;'>"
+                        f"<div title='{block_tooltip}' style='background-color: {fdr_meta['bg']}; color: {fdr_meta['text']}; font-weight: 700; border-radius: 6px; padding: 5px 2px; font-size: 0.76rem; box-shadow: 0 1px 2px rgba(0,0,0,0.08); cursor: default;'>"
+                        f"<div>{opp_label}</div>"
+                        f"<div style='font-size: 0.65rem; opacity: 0.95; font-weight: 600;'>{ha_badge}{' · ' + gw_tag if gw_tag else ''}</div>"
+                        f"</div>"
+                        f"</td>"
+                    )
+
+                # Pad missing matches if team has fewer matches than horizon_n
+                for _ in range(horizon_n - len(matches_list)):
+                    match_blocks_html += (
+                        "<td style='padding: 4px 3px; text-align: center;'>"
+                        "<div style='background-color: #f1f5f9; color: #94a3b8; font-weight: 600; border-radius: 6px; padding: 6px 2px; font-size: 0.76rem;'>-</div>"
+                        "</td>"
+                    )
                 
-                home_in_horizon = sum(1 for m in item['matches'][:horizon_n] if m.get('ha') == 'H')
+                home_in_horizon = sum(1 for m in matches_list if m.get('ha') == 'H')
 
-                table_rows_html += f"""
-                <tr style="border-bottom: 1px solid #f1f5f9;">
-                    <td style="padding: 8px 12px; font-size: 0.85rem; font-weight: 700; color: #0f172a; white-space: nowrap;">
-                        <span style="color: #94a3b8; font-size: 0.75rem; font-weight: 600; margin-right: 6px;">#{rank}</span>
-                        {club_name}
-                        <span style="font-size: 0.72rem; color: #64748b; font-weight: 600; margin-left: 4px;">({short_code})</span>
-                    </td>
-                    <td style="padding: 8px 6px; text-align: center; white-space: nowrap;">
-                        <span style="background: {fdr_badge_bg}; color: {fdr_badge_color}; border: 1px solid {fdr_badge_color}33; padding: 3px 8px; border-radius: 6px; font-weight: 800; font-size: 0.82rem;">
-                            {fdr_val:.2f}
-                        </span>
-                    </td>
-                    <td style="padding: 8px 6px; text-align: center; font-size: 0.8rem; font-weight: 600; color: #334155;">
-                        <span style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 2px 6px; border-radius: 4px;">{home_in_horizon}H / {horizon_n - home_in_horizon}A</span>
-                    </td>
-                    {match_blocks_html}
-                </tr>
-                """
+                table_rows_html += (
+                    f"<tr style='border-bottom: 1px solid #f1f5f9;'>"
+                    f"<td style='padding: 8px 12px; font-size: 0.85rem; font-weight: 700; color: #0f172a; white-space: nowrap;'>"
+                    f"<span style='color: #94a3b8; font-size: 0.75rem; font-weight: 600; margin-right: 6px;'>#{rank}</span>"
+                    f"{club_name} "
+                    f"<span style='font-size: 0.72rem; color: #64748b; font-weight: 600; margin-left: 4px;'>({short_code})</span>"
+                    f"</td>"
+                    f"<td style='padding: 8px 6px; text-align: center; white-space: nowrap;'>"
+                    f"<span style='background: {fdr_badge_bg}; color: {fdr_badge_color}; border: 1px solid {fdr_badge_color}33; padding: 3px 8px; border-radius: 6px; font-weight: 800; font-size: 0.82rem;'>"
+                    f"{fdr_val:.2f}"
+                    f"</span>"
+                    f"</td>"
+                    f"<td style='padding: 8px 6px; text-align: center; font-size: 0.8rem; font-weight: 600; color: #334155;'>"
+                    f"<span style='background: #f8fafc; border: 1px solid #e2e8f0; padding: 2px 6px; border-radius: 4px;'>{home_in_horizon}H / {horizon_n - home_in_horizon}A</span>"
+                    f"</td>"
+                    f"{match_blocks_html}"
+                    f"</tr>"
+                )
 
-            full_matrix_html = f"""
-            <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; overflow-x: auto; box-shadow: 0 1px 3px rgba(0,0,0,0.02); margin-bottom: 16px;">
-                <table style="width: 100%; border-collapse: collapse; min-width: 650px;">
-                    <thead>
-                        <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
-                            <th style="text-align: left; padding: 10px 12px; font-size: 0.8rem; color: #475569; font-weight: 700; text-transform: uppercase;">Klub Premier League</th>
-                            <th style="text-align: center; padding: 10px 6px; font-size: 0.8rem; color: #475569; font-weight: 700; text-transform: uppercase;">{active_fdr_label} Avg</th>
-                            <th style="text-align: center; padding: 10px 6px; font-size: 0.8rem; color: #475569; font-weight: 700; text-transform: uppercase;">Venue</th>
-                            {table_header_cols}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {table_rows_html}
-                    </tbody>
-                </table>
-            </div>
-            """
-            st.markdown(full_matrix_html, unsafe_allow_html=True)
+            full_matrix_html = (
+                f"<div style='background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; overflow-x: auto; box-shadow: 0 1px 3px rgba(0,0,0,0.02); margin-bottom: 16px;'>"
+                f"<table style='width: 100%; border-collapse: collapse; min-width: 650px;'>"
+                f"<thead>"
+                f"<tr style='background: #f8fafc; border-bottom: 1px solid #e2e8f0;'>"
+                f"<th style='text-align: left; padding: 10px 12px; font-size: 0.8rem; color: #475569; font-weight: 700; text-transform: uppercase;'>Klub Premier League</th>"
+                f"<th style='text-align: center; padding: 10px 6px; font-size: 0.8rem; color: #475569; font-weight: 700; text-transform: uppercase;'>{active_fdr_label} Avg</th>"
+                f"<th style='text-align: center; padding: 10px 6px; font-size: 0.8rem; color: #475569; font-weight: 700; text-transform: uppercase;'>Venue</th>"
+                f"{table_header_cols}"
+                f"</tr>"
+                f"</thead>"
+                f"<tbody>"
+                f"{table_rows_html}"
+                f"</tbody>"
+                f"</table>"
+                f"</div>"
+            )
+            if hasattr(st, 'html'):
+                st.html(full_matrix_html)
+            else:
+                st.markdown(full_matrix_html, unsafe_allow_html=True)
         else:
             df_rows = []
             for item in filtered_items:
                 row_data = {
-                    'Klub': item['club'],
-                    'Kode': item['short_name'],
-                    f'{active_fdr_label} Avg': item[active_fdr_key],
-                    'Laga Kandang': sum(1 for m in item['matches'][:horizon_n] if m.get('ha') == 'H'),
+                    'Klub': item.get('club', 'TBD'),
+                    'Kode': item.get('short_name', ''),
+                    f'{active_fdr_label} Avg': float(item.get(active_fdr_key, 3.0) or 3.0),
+                    'Laga Kandang': sum(1 for m in item.get('matches', [])[:horizon_n] if m.get('ha') == 'H'),
                 }
-                for idx, m in enumerate(item['matches'][:horizon_n]):
+                for idx, m in enumerate(item.get('matches', [])[:horizon_n]):
                     gw_val = detected_gw_labels[idx] if idx < len(detected_gw_labels) and detected_gw_labels[idx] is not None else None
                     col_name = f"GW{gw_val}" if gw_val is not None else f"M{idx+1}"
-                    row_data[col_name] = f"{m['opp_short']} ({m['ha']}) [{m['diff']}]"
+                    try:
+                        diff_val = int(round(float(m.get('diff', 3) or 3)))
+                    except Exception:
+                        diff_val = 3
+                    row_data[col_name] = f"{m.get('opp_short', 'TBD')} ({m.get('ha', '-')}) [{diff_val}]"
                 df_rows.append(row_data)
 
             matrix_df = pd.DataFrame(df_rows)
@@ -1128,18 +1164,50 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                 except Exception:
                     return ''
 
-            styled_matrix = (
-                matrix_df.style
-                .map(style_fdr_cell, subset=match_cols)
-                .map(style_fdr_avg, subset=[f'{active_fdr_label} Avg'])
-                .format({f'{active_fdr_label} Avg': '{:.2f}'})
-            )
+            try:
+                styled_matrix = matrix_df.style
+                if match_cols:
+                    styled_matrix = styled_matrix.map(style_fdr_cell, subset=match_cols)
+                if f'{active_fdr_label} Avg' in matrix_df.columns:
+                    styled_matrix = styled_matrix.map(style_fdr_avg, subset=[f'{active_fdr_label} Avg']).format({f'{active_fdr_label} Avg': '{:.2f}'})
 
-            st.dataframe(
-                styled_matrix,
-                use_container_width=True,
-                hide_index=True
+                st.dataframe(
+                    styled_matrix,
+                    use_container_width=True,
+                    hide_index=True
+                )
+            except Exception:
+                st.dataframe(
+                    matrix_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+        # Quick Club Profile & Assets Dialog Opener from Matrix
+        st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+        st.markdown("###### 🔍 Buka Pop-up Profil Klub Langsung dari Matriks Ticker:")
+        c_m_tb1, c_m_tb2 = st.columns([3, 1.5])
+        with c_m_tb1:
+            m_tbl_selected_club = st.selectbox(
+                "Pilih klub untuk membuka profil & analisis aset FPL:",
+                options=all_club_names,
+                key="matrix_view_club_sel"
             )
+        with c_m_tb2:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            if st.button(f"🔍 Buka Profil {m_tbl_selected_club}", key="btn_open_matrix_club", use_container_width=True):
+                st.session_state['dlg_last_initial'] = m_tbl_selected_club
+                st.session_state['dlg_modal_club'] = m_tbl_selected_club
+                show_club_profile_dialog(
+                    m_tbl_selected_club,
+                    None,
+                    all_club_names=all_club_names,
+                    df_teams=df_teams,
+                    players_df=players_df,
+                    fdr_summary=fdr_summary,
+                    teams_dict=teams_dict,
+                    club_short_map=club_short_map
+                )
 
     # =========================================================================
     # TAB 3: KOMPARASI HEAD-TO-HEAD 2 KLUB (DUEL FIXTURES)
