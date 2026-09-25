@@ -372,9 +372,9 @@ def main():
     current_gw = get_current_gw(fpl_data)
     df_historical = load_historical_training_data()
 
-    # Train 4 Positional Regression Models for xPoin (Option A)
+    # Train 4 Positional Regression Models for xPoin (Option A) with accurate FDR extraction
     models_dict = train_xpoints_model(
-        fpl_data.get('elements', []), fdr_summary, current_gw, df_historical
+        fpl_data.get('elements', []), fdr_summary, current_gw, df_historical, fixtures_data=fixtures_data
     )
 
     # Process Player Dataset (Without Option B models first to calculate team strength)
@@ -389,9 +389,9 @@ def main():
     # Calculate comprehensive team strength analysis once for shared use
     df_teams = calculate_team_strength_analysis(fpl_data, players_df, fdr_summary)
 
-    # Train Option B Match xG & xA Models (Option B) using calculated team strengths
+    # Train Option B Match xG & xA Models (Option B) using calculated team strengths and matchday FDR
     opt_b_model_xg, opt_b_model_xa, stats_xg, stats_xa = train_option_b_models(
-        fpl_data.get('elements', []), fdr_summary, current_gw, df_historical, _df_teams=df_teams
+        fpl_data.get('elements', []), fdr_summary, current_gw, df_historical, _df_teams=df_teams, fixtures_data=fixtures_data
     )
 
     # -------------------------------------------------------------------------
@@ -523,7 +523,7 @@ def main():
         ]
 
     # Pre-fetch Option C data for multi-option comparison (cached)
-    df_opt_c, _ = build_option_c_model_and_view(fpl_data, fdr_summary, current_gw)
+    df_opt_c, _ = build_option_c_model_and_view(fpl_data, fdr_summary, current_gw, fixtures_data=fixtures_data)
 
     def render_content_by_id(mod_id):
         if mod_id == "player_stats":
@@ -541,7 +541,7 @@ def main():
                 df_teams=df_teams, fixtures=fixtures_data, teams_dict=teams_dict, current_gw=current_gw_num
             )
         elif mod_id == "option_c":
-            render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=filtered_players, price_range=price_range, df_option_c=df_opt_c)
+            render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=filtered_players, price_range=price_range, df_option_c=df_opt_c, fixtures_data=fixtures_data)
         elif mod_id == "team_strength":
             render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data, teams_dict)
         elif mod_id == "fixtures":
