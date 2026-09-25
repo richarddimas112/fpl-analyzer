@@ -836,27 +836,27 @@ def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw, fixtures_da
     if df_train_all.empty or len(df_train_all) < 30:
         return df_pred_all, {}
 
-    # Konfigurasi Fitur Spesifik per Posisi
+    # Konfigurasi Fitur Spesifik per Posisi (Tanpa parameter Harga/Cost)
     pos_configs = {
         'FWD': {
             'element_type': 4,
-            'features': ['cost', 'was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_bps_3', 'roll_ict_3'],
-            'labels': ['Harga (£m)', 'Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xG L3M', 'Avg xA L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
+            'features': ['was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_bps_3', 'roll_ict_3'],
+            'labels': ['Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xG L3M', 'Avg xA L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
         },
         'MID': {
             'element_type': 3,
-            'features': ['cost', 'was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_xgc_3', 'roll_bps_3', 'roll_ict_3'],
-            'labels': ['Harga (£m)', 'Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xG L3M', 'Avg xA L3M', 'Avg xGC L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
+            'features': ['was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_xgc_3', 'roll_bps_3', 'roll_ict_3'],
+            'labels': ['Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xG L3M', 'Avg xA L3M', 'Avg xGC L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
         },
         'DEF': {
             'element_type': 2,
-            'features': ['cost', 'was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_xgc_3', 'roll_bps_3', 'roll_ict_3'],
-            'labels': ['Harga (£m)', 'Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xG L3M', 'Avg xA L3M', 'Avg xGC L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
+            'features': ['was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_xgc_3', 'roll_bps_3', 'roll_ict_3'],
+            'labels': ['Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xG L3M', 'Avg xA L3M', 'Avg xGC L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
         },
         'GK': {
             'element_type': 1,
-            'features': ['cost', 'was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xgc_3', 'roll_bps_3'],
-            'labels': ['Harga (£m)', 'Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xGC L3M', 'Avg BPS L3M']
+            'features': ['was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xgc_3', 'roll_bps_3'],
+            'labels': ['Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xGC L3M', 'Avg BPS L3M']
         }
     }
 
@@ -952,8 +952,8 @@ def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw, fixtures_da
         }
 
     # Summary keseluruhan untuk kompatibilitas view
-    overall_f_cols = ['cost', 'was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_xgc_3', 'roll_bps_3', 'roll_ict_3']
-    overall_labels = ['Harga Pemain (£m)', 'Laga Kandang (Home)', 'FDR Lawan Mendatang', 'Avg Menit L5M', 'Avg Poin L3M (Form)', 'Avg xG L3M', 'Avg xA L3M', 'Avg xGC L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
+    overall_f_cols = ['was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_xgc_3', 'roll_bps_3', 'roll_ict_3']
+    overall_labels = ['Laga Kandang (Home)', 'FDR Lawan Mendatang', 'Avg Menit L5M', 'Avg Poin L3M (Form)', 'Avg xG L3M', 'Avg xA L3M', 'Avg xGC L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
     
     cv_all, folds_all = run_purged_walk_forward_cv(df_train_all, overall_f_cols)
     
