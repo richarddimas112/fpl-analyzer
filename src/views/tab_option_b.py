@@ -194,7 +194,7 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
     sorted_optb = filtered_players.sort_values(by="xPoin (Option B)", ascending=False)
     optb_cols = [
         'Nama Pemain', 'Klub', 'Posisi', 'Harga (£m)', 'xPoin (Option B)',
-        'Diff Attack Team', 'Diff Defense Team',
+        'Diff Attack Team', 'Diff Defense Team', 'Peluang CS (%)',
         'xPoin', 'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
         'xG Pred (Match)', 'xA Pred (Match)', 'Avg Mins (L5M)', 'Lawan GW Berikutnya', 'Status'
     ]
@@ -203,6 +203,9 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
     for col in optb_cols:
         if col not in sorted_optb.columns:
             sorted_optb[col] = 0.0
+
+    st.markdown("#### 📋 Tabel Rangkuman Dekonstruksi Komponen xPoin (Option B)")
+    st.info("🛡️ **Model Bivariat Dixon-Coles / Poisson Clean Sheet**: Peluang Clean Sheet (`Peluang CS (%)`) dihitung secara dinamis dari Model Bivariat Poisson dengan koreksi korelasi skor rendah ($\\rho = -0.06$) berdasarkan $\\lambda_{opp}$ (ekspektasi kebobolan dari Diff Defense) dan $\\lambda_{team}$ (Diff Attack).")
 
     st.dataframe(
         sorted_optb[optb_cols],
@@ -221,6 +224,13 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
                 format="%+.1f",
                 help="Differential Pertahanan Tim vs Serangan Lawan (Skor Pertahanan - Skor Serangan Lawan)"
             ),
+            "Peluang CS (%)": st.column_config.ProgressColumn(
+                "Peluang CS (%)",
+                help="Probabilitas Clean Sheet tim dihitung menggunakan Model Bivariat Dixon-Coles Poisson",
+                format="%.1f%%",
+                min_value=0.0,
+                max_value=100.0
+            ),
             "xPoin": st.column_config.NumberColumn(format="%.2f pts"),
             "xMins Pts": st.column_config.NumberColumn(format="%.2f"),
             "xG Pts": st.column_config.NumberColumn(format="%.2f"),
@@ -234,5 +244,5 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
             "Avg Mins (L5M)": st.column_config.NumberColumn(format="%.1f mins")
         }
     )
-    st.caption("💡 *Option B Formula: xPoin = xMins_Pts + xG_Pts(diff_att) + xA_Pts(diff_att) + xSaves_Pts + xDC_Pts(diff_def) + xCS_Pts(diff_def) + xBP.*")
+    st.caption("💡 *Option B Formula: xPoin = xMins_Pts + xG_Pts(diff_att) + xA_Pts(diff_att) + xSaves_Pts + xDC_Pts(diff_def) + xCS_Pts(Dixon-Coles CS%) + xBP.*")
 

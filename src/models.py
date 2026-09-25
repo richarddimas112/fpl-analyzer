@@ -106,7 +106,7 @@ def check_setpiece_taker(corner_ord, fk_ord):
     return 0
 
 @st.cache_data(ttl=86400)
-def train_option_b_models(players_list, fdr_summary, current_gw, df_historical, _df_teams=None):
+def train_option_b_models(players_list, fdr_summary, current_gw, df_historical, _df_teams=None, fixtures_data=None):
     """
     Train separate Linear Regression models for xG and xA match-level prediction per position (FWD, MID, DEF).
     Model xG Features: Opponent_xGC_per_90, was_home, form, thread_per_90, FDR, Diff Attack Team
@@ -118,6 +118,15 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical, 
     stats_xa = {}
 
     target_positions = ['FWD', 'MID', 'DEF']
+
+    # Pre-build fixture FDR mapping
+    fixture_fdr_map = {}
+    if fixtures_data:
+        for f in fixtures_data:
+            f_id = f.get('id')
+            if f_id:
+                fixture_fdr_map[(f_id, True)] = float(f.get('team_h_difficulty', 3.0))
+                fixture_fdr_map[(f_id, False)] = float(f.get('team_a_difficulty', 3.0))
 
     # Pre-build team strength dictionary to optimize calculation
     team_att_dict = {}
@@ -153,10 +162,16 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical, 
                     mins = int(m.get('minutes', 0))
                     if mins > 0:
                         was_home = 1 if m.get('was_home') else 0
+                        f_id = m.get('fixture')
                         opp_id = m.get('opponent_team', 1)
                         opp_fdr_info = fdr_summary.get(opp_id, {})
-                        opp_xgc90 = float(opp_fdr_info.get('FDR1', 3.0)) / 2.22
-                        fdr_val = float(opp_fdr_info.get('FDR1', m.get('difficulty', 3.0)))
+
+                        # Ambil FDR resmi match historis dari fixtures_data
+                        fdr_val = fixture_fdr_map.get((f_id, bool(m.get('was_home'))))
+                        if fdr_val is None:
+                            fdr_val = float(m.get('difficulty') or opp_fdr_info.get('FDR1', 3.0))
+
+                        opp_xgc90 = float(fdr_val) / 2.22
                         
                         threat_val = float(m.get('threat', 0.0) or 0.0)
                         threat90 = (threat_val / mins) * 90.0
@@ -169,11 +184,11 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical, 
 
                         player_name = p.get('web_name', f"Pemain {p.get('id')}")
 
-                        # Hitung Diff Attack Team setiap laga historis menggunakan selisih skor serangan tim vs pertahanan musuh
+                        # Hitung Diff Attack Team setiap laga historis dengan modulasi venue matchday
                         diff_attack_val = 0.0
                         if team_att_dict and team_def_dict:
-                            p_att = team_att_dict.get(p_team_id, 50.0)
-                            opp_def = team_def_dict.get(opp_id, 50.0)
+                            p_att = team_att_dict.get(p_team_id, 50.0) + (4.0 if was_home else -4.0)
+                            opp_def = team_def_dict.get(opp_id, 50.0) + (-4.0 if was_home else 4.0)
                             diff_attack_val = round(p_att - opp_def, 1)
                         else:
                             diff_attack_val = round((3.5 - fdr_val) * 12.0 + (5.0 if was_home else -5.0), 1)
@@ -403,8 +418,17 @@ def train_option_b_models(players_list, fdr_summary, current_gw, df_historical, 
     return opt_b_models_xg, opt_b_models_xa, stats_xg, stats_xa
 
 @st.cache_data(ttl=86400)
-def train_xpoints_model(players_list, fdr_summary, current_gw, df_historical):
+def train_xpoints_model(players_list, fdr_summary, current_gw, df_historical, fixtures_data=None):
     models_dict = {}
+
+    # Pre-build fixture FDR mapping
+    fixture_fdr_map = {}
+    if fixtures_data:
+        for f in fixtures_data:
+            f_id = f.get('id')
+            if f_id:
+                fixture_fdr_map[(f_id, True)] = float(f.get('team_h_difficulty', 3.0))
+                fixture_fdr_map[(f_id, False)] = float(f.get('team_a_difficulty', 3.0))
 
     for pos_key, cfg in POS_MODEL_CONFIGS.items():
         pos_el_type = cfg['element_type']
@@ -444,13 +468,23 @@ def train_xpoints_model(players_list, fdr_summary, current_gw, df_historical):
                         tot_def_actions = tackles + interceptions + clearances + recoveries
                         def_contrib_90 = min(20.0, (tot_def_actions / eff_m_mins) * 90.0) if tot_def_actions > 0 else min(10.0, p_def_contrib)
 
+                        was_home = 1 if m.get('was_home') else 0
+                        f_id = m.get('fixture')
+                        opp_id = m.get('opponent_team', 1)
+                        opp_fdr_info = fdr_summary.get(opp_id, {})
+                        
+                        # Fix bug FDR: Ekstraksi nilai resmi FDR (1-5), bukan opponent_team ID (1-20)
+                        fdr_val = fixture_fdr_map.get((f_id, bool(m.get('was_home'))))
+                        if fdr_val is None:
+                            fdr_val = float(m.get('difficulty') or opp_fdr_info.get('FDR1', 3.0))
+
                         history_rows.append({
                             'xG_per_90': xg90,
                             'xA_per_90': xa90,
                             'bps_per_90': bps90,
                             'form': p_form,
-                            'was_home': 1 if m.get('was_home') else 0,
-                            'FDR': int(m.get('opponent_team', 3)),
+                            'was_home': was_home,
+                            'FDR': fdr_val,
                             'last_minutes_5_match': avg_mins_l5m,
                             'ict_index': ict90,
                             'Defensive_Contribution_per_90': def_contrib_90,
@@ -533,21 +567,124 @@ def train_xpoints_model(players_list, fdr_summary, current_gw, df_historical):
 
     return models_dict
 
+def run_purged_walk_forward_cv(df_pos, feature_cols, target_col='target_points'):
+    """
+    Menjalankan Purged Walk-Forward Time-Series Cross Validation.
+    Data diurutkan secara temporal berdasarkan 'round' (Gameweek).
+    Pada setiap fold:
+      Train: round <= t (hanya informasi masa lampau)
+      Test: round == t + 1 (strictly out-of-sample forward step)
+    Menghitung MAE, RMSE, dan R2 out-of-sample murni tanpa lookahead leakage.
+    """
+    unique_rounds = sorted([int(r) for r in df_pos['round'].dropna().unique()])
+    if len(unique_rounds) < 2:
+        return None, []
+        
+    fold_details = []
+    oof_preds_lr = []
+    oof_preds_rd = []
+    oof_preds_gb = []
+    oof_preds_ens = []
+    oof_y_true = []
+    
+    for t in unique_rounds[:-1]:
+        train_df = df_pos[df_pos['round'] <= t]
+        test_df = df_pos[df_pos['round'] == t + 1]
+        
+        if len(train_df) < 5 or len(test_df) < 2:
+            continue
+            
+        X_tr = train_df[feature_cols].fillna(0.0)
+        y_tr = train_df[target_col].fillna(0.0)
+        X_te = test_df[feature_cols].fillna(0.0)
+        y_te = test_df[target_col].fillna(0.0)
+        
+        m_lr = LinearRegression()
+        m_rd = Ridge(alpha=1.0)
+        m_gb = GradientBoostingRegressor(n_estimators=60, learning_rate=0.05, max_depth=3, random_state=42)
+        
+        m_lr.fit(X_tr, y_tr)
+        m_rd.fit(X_tr, y_tr)
+        m_gb.fit(X_tr, y_tr)
+        
+        p_lr = np.clip(m_lr.predict(X_te), 0.0, 24.0)
+        p_rd = np.clip(m_rd.predict(X_te), 0.0, 24.0)
+        p_gb = np.clip(m_gb.predict(X_te), 0.0, 24.0)
+        p_ens = (0.40 * p_gb) + (0.35 * p_rd) + (0.25 * p_lr)
+        
+        f_mae_ens = mean_absolute_error(y_te, p_ens)
+        f_rmse_ens = np.sqrt(np.mean((y_te - p_ens) ** 2))
+        
+        fold_details.append({
+            'fold': f"GW 1-{t} → GW {t+1}",
+            'train_info': f"GW <= {t} ({len(train_df)} sampel)",
+            'test_info': f"GW {t+1} ({len(test_df)} sampel)",
+            'mae_ens': round(float(f_mae_ens), 4),
+            'rmse_ens': round(float(f_rmse_ens), 4),
+            'mae_gb': round(float(mean_absolute_error(y_te, p_gb)), 4),
+            'mae_rd': round(float(mean_absolute_error(y_te, p_rd)), 4),
+            'mae_lr': round(float(mean_absolute_error(y_te, p_lr)), 4)
+        })
+        
+        oof_preds_lr.extend(p_lr.tolist())
+        oof_preds_rd.extend(p_rd.tolist())
+        oof_preds_gb.extend(p_gb.tolist())
+        oof_preds_ens.extend(p_ens.tolist())
+        oof_y_true.extend(y_te.tolist())
+        
+    if not oof_y_true:
+        return None, []
+        
+    y_true_arr = np.array(oof_y_true)
+    cv_summary = {
+        'Linear Regression': {
+            'mae': round(float(mean_absolute_error(y_true_arr, oof_preds_lr)), 4),
+            'rmse': round(float(np.sqrt(np.mean((y_true_arr - np.array(oof_preds_lr)) ** 2))), 4),
+            'r2': round(float(r2_score(y_true_arr, oof_preds_lr)), 4)
+        },
+        'Ridge Regression': {
+            'mae': round(float(mean_absolute_error(y_true_arr, oof_preds_rd)), 4),
+            'rmse': round(float(np.sqrt(np.mean((y_true_arr - np.array(oof_preds_rd)) ** 2))), 4),
+            'r2': round(float(r2_score(y_true_arr, oof_preds_rd)), 4)
+        },
+        'Gradient Boosting': {
+            'mae': round(float(mean_absolute_error(y_true_arr, oof_preds_gb)), 4),
+            'rmse': round(float(np.sqrt(np.mean((y_true_arr - np.array(oof_preds_gb)) ** 2))), 4),
+            'r2': round(float(r2_score(y_true_arr, oof_preds_gb)), 4)
+        },
+        'Ensemble': {
+            'mae': round(float(mean_absolute_error(y_true_arr, oof_preds_ens)), 4),
+            'rmse': round(float(np.sqrt(np.mean((y_true_arr - np.array(oof_preds_ens)) ** 2))), 4),
+            'r2': round(float(r2_score(y_true_arr, oof_preds_ens)), 4)
+        }
+    }
+    return cv_summary, fold_details
+
 @st.cache_data(ttl=86400)
-def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw):
+def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw, fixtures_data=None):
     """
     Mengambil data match history dari seluruh pemain aktif di musim berjalan (Current Season Only),
     mengekstraksi fitur rolling (form L3M, minutes L5M, rolling xG/xA/xGC, Home/Away, FDR lawan),
-    kemudian melatih 3 algoritma Machine Learning:
+    kemudian melatih model terpisah per posisi (FWD, MID, DEF, GK) dengan 3 algoritma Machine Learning:
     1. Multiple Linear Regression
     2. Ridge Regression (L2 Regularization)
     3. Gradient Boosting Regressor (Tree-based Non-linear Ensemble)
     
-    Menghitung metrik performa (MAE, RMSE, R²) dan menghasilkan prediksi xPoin GW selanjutnya.
+    Mengevaluasi model menggunakan Purged Walk-Forward Time-Series Cross Validation (tanpa lookahead leakage)
+    dan menghasilkan prediksi xPoin GW selanjutnya.
     """
     elements = fpl_data.get('elements', [])
     teams = fpl_data.get('teams', [])
     teams_dict = {t['id']: t['name'] for t in teams}
+
+    # Pre-build fixture FDR mapping
+    fixture_fdr_map = {}
+    if fixtures_data:
+        for f in fixtures_data:
+            f_id = f.get('id')
+            if f_id:
+                fixture_fdr_map[(f_id, True)] = float(f.get('team_h_difficulty', 3.0))
+                fixture_fdr_map[(f_id, False)] = float(f.get('team_a_difficulty', 3.0))
 
     # Ambil pemain aktif yang telah bermain minimal 1 menit
     active_elements = [el for el in elements if int(el.get('minutes', 0)) > 0]
@@ -601,6 +738,7 @@ def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw):
         for i in range(len(sorted_hist)):
             m = sorted_hist[i]
             pts_actual = int(m.get('total_points', 0))
+            m_round = int(m.get('round', m.get('event', 1)))
             
             # Hitung Rolling Features dari Laga-laga sebelumnya (lagged history)
             past_matches = sorted_hist[:i] # Pertandingan sebelum laga ini
@@ -626,12 +764,17 @@ def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw):
                 roll_ict_3 = sum(float(x.get('ict_index', 0.0)) for x in last_3) / float(len(last_3))
 
             was_home = 1 if m.get('was_home') else 0
+            f_id = m.get('fixture')
             opp_id = m.get('opponent_team', 1)
             opp_fdr_info = fdr_summary.get(opp_id, {})
-            fdr_match = float(opp_fdr_info.get('FDR1', 3.0))
+            
+            fdr_match = fixture_fdr_map.get((f_id, bool(m.get('was_home'))))
+            if fdr_match is None:
+                fdr_match = float(m.get('difficulty') or opp_fdr_info.get('FDR1', 3.0))
 
             train_records.append({
                 'player_id': p_id,
+                'round': m_round,
                 'element_type': p_type,
                 'cost': p_cost,
                 'was_home': was_home,
@@ -693,96 +836,157 @@ def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw):
     if df_train_all.empty or len(df_train_all) < 30:
         return df_pred_all, {}
 
-    feature_cols = [
-        'cost', 'was_home', 'fdr', 'roll_mins_5', 'roll_pts_3',
-        'roll_xg_3', 'roll_xa_3', 'roll_xgc_3', 'roll_bps_3', 'roll_ict_3'
-    ]
+    # Konfigurasi Fitur Spesifik per Posisi
+    pos_configs = {
+        'FWD': {
+            'element_type': 4,
+            'features': ['cost', 'was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_bps_3', 'roll_ict_3'],
+            'labels': ['Harga (£m)', 'Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xG L3M', 'Avg xA L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
+        },
+        'MID': {
+            'element_type': 3,
+            'features': ['cost', 'was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_xgc_3', 'roll_bps_3', 'roll_ict_3'],
+            'labels': ['Harga (£m)', 'Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xG L3M', 'Avg xA L3M', 'Avg xGC L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
+        },
+        'DEF': {
+            'element_type': 2,
+            'features': ['cost', 'was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_xgc_3', 'roll_bps_3', 'roll_ict_3'],
+            'labels': ['Harga (£m)', 'Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xG L3M', 'Avg xA L3M', 'Avg xGC L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
+        },
+        'GK': {
+            'element_type': 1,
+            'features': ['cost', 'was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xgc_3', 'roll_bps_3'],
+            'labels': ['Harga (£m)', 'Home', 'FDR Lawan', 'Avg Menit L5M', 'Form Poin L3M', 'Avg xGC L3M', 'Avg BPS L3M']
+        }
+    }
 
-    feature_labels = [
-        'Harga Pemain (£m)',
-        'Laga Kandang (Home)',
-        'FDR Lawan Mendatang',
-        'Avg Menit L5M',
-        'Avg Poin L3M (Form)',
-        'Avg xG L3M',
-        'Avg xA L3M',
-        'Avg xGC L3M',
-        'Avg BPS L3M',
-        'Avg ICT Index L3M'
-    ]
+    # Kolom output prediksi
+    df_pred_all['xPoin (Linear Reg)'] = 0.0
+    df_pred_all['xPoin (Ridge Reg)'] = 0.0
+    df_pred_all['xPoin (Gradient Boosting)'] = 0.0
+    df_pred_all['xPoin (Option C Ensemble)'] = 0.0
 
     models_performance = {}
+
+    # Latih model spesifik per posisi
+    for pos_key, p_cfg in pos_configs.items():
+        el_type = p_cfg['element_type']
+        f_cols = p_cfg['features']
+        f_labels = p_cfg['labels']
+
+        pos_train = df_train_all[df_train_all['element_type'] == el_type]
+        pos_pred = df_pred_all[df_pred_all['element_type'] == el_type]
+
+        if pos_train.empty or len(pos_train) < 10:
+            # Fallback ke seluruh dataset jika data posisi terlalu sedikit
+            pos_train = df_train_all
+            common_cols = [c for c in f_cols if c in pos_train.columns]
+            f_cols = common_cols
+            f_labels = [f_labels[i] for i, c in enumerate(p_cfg['features']) if c in common_cols]
+
+        # 1. Jalankan Purged Walk-Forward Time-Series Cross Validation
+        cv_summary, fold_details = run_purged_walk_forward_cv(pos_train, f_cols)
+
+        # 2. Latih Model Final pada seluruh data historis posisi ini
+        X_train = pos_train[f_cols].fillna(0.0)
+        y_train = pos_train['target_points'].fillna(0.0)
+
+        lr = LinearRegression()
+        ridge = Ridge(alpha=1.0)
+        gbr = GradientBoostingRegressor(n_estimators=80, learning_rate=0.05, max_depth=3, random_state=42)
+
+        lr.fit(X_train, y_train)
+        ridge.fit(X_train, y_train)
+        gbr.fit(X_train, y_train)
+
+        # In-sample metrics
+        p_lr_tr = lr.predict(X_train)
+        p_rd_tr = ridge.predict(X_train)
+        p_gb_tr = gbr.predict(X_train)
+        p_ens_tr = (0.40 * p_gb_tr) + (0.35 * p_rd_tr) + (0.25 * p_lr_tr)
+
+        in_sample = {
+            'Linear Regression': {'mae': round(float(mean_absolute_error(y_train, p_lr_tr)), 4), 'rmse': round(float(np.sqrt(np.mean((y_train - p_lr_tr)**2))), 4), 'r2': round(float(r2_score(y_train, p_lr_tr)), 4)},
+            'Ridge Regression': {'mae': round(float(mean_absolute_error(y_train, p_rd_tr)), 4), 'rmse': round(float(np.sqrt(np.mean((y_train - p_rd_tr)**2))), 4), 'r2': round(float(r2_score(y_train, p_rd_tr)), 4)},
+            'Gradient Boosting': {'mae': round(float(mean_absolute_error(y_train, p_gb_tr)), 4), 'rmse': round(float(np.sqrt(np.mean((y_train - p_gb_tr)**2))), 4), 'r2': round(float(r2_score(y_train, p_gb_tr)), 4)},
+            'Ensemble': {'mae': round(float(mean_absolute_error(y_train, p_ens_tr)), 4), 'rmse': round(float(np.sqrt(np.mean((y_train - p_ens_tr)**2))), 4), 'r2': round(float(r2_score(y_train, p_ens_tr)), 4)}
+        }
+
+        # Predict upcoming match jika ada pemain di posisi ini
+        if not pos_pred.empty:
+            X_up = pos_pred[f_cols].fillna(0.0)
+            chance_factor = (pos_pred['Peluang Main GW (%)'] / 100.0).values
+
+            p_lr_up = np.clip(lr.predict(X_up), 0.0, 24.0) * chance_factor
+            p_rd_up = np.clip(ridge.predict(X_up), 0.0, 24.0) * chance_factor
+            p_gb_up = np.clip(gbr.predict(X_up), 0.0, 24.0) * chance_factor
+            p_ens_up = (0.40 * p_gb_up) + (0.35 * p_rd_up) + (0.25 * p_lr_up)
+
+            sub_idx = pos_pred.index
+            df_pred_all.loc[sub_idx, 'xPoin (Linear Reg)'] = np.round(p_lr_up, 2)
+            df_pred_all.loc[sub_idx, 'xPoin (Ridge Reg)'] = np.round(p_rd_up, 2)
+            df_pred_all.loc[sub_idx, 'xPoin (Gradient Boosting)'] = np.round(p_gb_up, 2)
+            df_pred_all.loc[sub_idx, 'xPoin (Option C Ensemble)'] = np.round(p_ens_up, 2)
+
+        # Feature Importance DataFrames
+        imp_df = pd.DataFrame({
+            'Fitur': f_labels,
+            'Tingkat Kepentingan (%)': np.round(gbr.feature_importances_ * 100, 2)
+        }).sort_values(by='Tingkat Kepentingan (%)', ascending=False)
+
+        coef_df = pd.DataFrame({
+            'Fitur': f_labels,
+            'Bobot LR (β)': np.round(lr.coef_, 4),
+            'Bobot Ridge (β)': np.round(ridge.coef_, 4)
+        })
+
+        models_performance[pos_key] = {
+            'cv_metrics': cv_summary if cv_summary else in_sample,
+            'in_sample': in_sample,
+            'importance_df': imp_df,
+            'coef_df': coef_df,
+            'n_samples': len(pos_train),
+            'folds_evaluated': len(fold_details),
+            'fold_details': fold_details,
+            'has_walk_forward_cv': bool(cv_summary)
+        }
+
+    # Summary keseluruhan untuk kompatibilitas view
+    overall_f_cols = ['cost', 'was_home', 'fdr', 'roll_mins_5', 'roll_pts_3', 'roll_xg_3', 'roll_xa_3', 'roll_xgc_3', 'roll_bps_3', 'roll_ict_3']
+    overall_labels = ['Harga Pemain (£m)', 'Laga Kandang (Home)', 'FDR Lawan Mendatang', 'Avg Menit L5M', 'Avg Poin L3M (Form)', 'Avg xG L3M', 'Avg xA L3M', 'Avg xGC L3M', 'Avg BPS L3M', 'Avg ICT Index L3M']
     
-    # 1. Model: Multiple Linear Regression
-    lr = LinearRegression()
-    # 2. Model: Ridge Regression (L2)
-    ridge = Ridge(alpha=1.0)
-    # 3. Model: Gradient Boosting Regressor
-    gbr = GradientBoostingRegressor(n_estimators=100, learning_rate=0.05, max_depth=3, random_state=42)
+    cv_all, folds_all = run_purged_walk_forward_cv(df_train_all, overall_f_cols)
+    
+    # Global fallback model untuk interpretasi umum
+    g_lr = LinearRegression().fit(df_train_all[overall_f_cols], df_train_all['target_points'])
+    g_rd = Ridge(alpha=1.0).fit(df_train_all[overall_f_cols], df_train_all['target_points'])
+    g_gb = GradientBoostingRegressor(n_estimators=80, learning_rate=0.05, max_depth=3, random_state=42).fit(df_train_all[overall_f_cols], df_train_all['target_points'])
 
-    X_train = df_train_all[feature_cols]
-    y_train = df_train_all['target_points']
-    X_upcoming = df_pred_all[feature_cols]
-
-    # Training Linear Regression
-    lr.fit(X_train, y_train)
-    p_lr_train = lr.predict(X_train)
-    p_lr_up = np.clip(lr.predict(X_upcoming), 0.0, 24.0) * (df_pred_all['Peluang Main GW (%)'] / 100.0)
-
-    mae_lr = mean_absolute_error(y_train, p_lr_train)
-    rmse_lr = np.sqrt(np.mean((y_train - p_lr_train) ** 2))
-    r2_lr = r2_score(y_train, p_lr_train)
-
-    models_performance['Linear Regression'] = {
-        'mae': round(mae_lr, 4),
-        'rmse': round(rmse_lr, 4),
-        'r2': round(r2_lr, 4),
-        'coef_df': pd.DataFrame({'Fitur': feature_labels, 'Bobot Koefisien (β)': np.round(lr.coef_, 4)})
+    global_in_sample = {
+        'Linear Regression': {'mae': round(float(mean_absolute_error(df_train_all['target_points'], g_lr.predict(df_train_all[overall_f_cols]))), 4), 'rmse': round(float(np.sqrt(np.mean((df_train_all['target_points'] - g_lr.predict(df_train_all[overall_f_cols]))**2))), 4), 'r2': round(float(r2_score(df_train_all['target_points'], g_lr.predict(df_train_all[overall_f_cols]))), 4)},
+        'Ridge Regression': {'mae': round(float(mean_absolute_error(df_train_all['target_points'], g_rd.predict(df_train_all[overall_f_cols]))), 4), 'rmse': round(float(np.sqrt(np.mean((df_train_all['target_points'] - g_rd.predict(df_train_all[overall_f_cols]))**2))), 4), 'r2': round(float(r2_score(df_train_all['target_points'], g_rd.predict(df_train_all[overall_f_cols]))), 4)},
+        'Gradient Boosting': {'mae': round(float(mean_absolute_error(df_train_all['target_points'], g_gb.predict(df_train_all[overall_f_cols]))), 4), 'rmse': round(float(np.sqrt(np.mean((df_train_all['target_points'] - g_gb.predict(df_train_all[overall_f_cols]))**2))), 4), 'r2': round(float(r2_score(df_train_all['target_points'], g_gb.predict(df_train_all[overall_f_cols]))), 4)}
     }
 
-    # Training Ridge Regression
-    ridge.fit(X_train, y_train)
-    p_ridge_train = ridge.predict(X_train)
-    p_ridge_up = np.clip(ridge.predict(X_upcoming), 0.0, 24.0) * (df_pred_all['Peluang Main GW (%)'] / 100.0)
-
-    mae_rd = mean_absolute_error(y_train, p_ridge_train)
-    rmse_rd = np.sqrt(np.mean((y_train - p_ridge_train) ** 2))
-    r2_rd = r2_score(y_train, p_ridge_train)
-
-    models_performance['Ridge Regression'] = {
-        'mae': round(mae_rd, 4),
-        'rmse': round(rmse_rd, 4),
-        'r2': round(r2_rd, 4),
-        'coef_df': pd.DataFrame({'Fitur': feature_labels, 'Bobot Koefisien (β)': np.round(ridge.coef_, 4)})
+    models_performance['ALL'] = {
+        'cv_metrics': cv_all if cv_all else global_in_sample,
+        'in_sample': global_in_sample,
+        'importance_df': pd.DataFrame({'Fitur': overall_labels, 'Tingkat Kepentingan Fitur (%)': np.round(g_gb.feature_importances_ * 100, 2)}).sort_values(by='Tingkat Kepentingan Fitur (%)', ascending=False),
+        'coef_df': pd.DataFrame({'Fitur': overall_labels, 'Bobot Koefisien (β)': np.round(g_rd.coef_, 4)}),
+        'n_samples': len(df_train_all),
+        'folds_evaluated': len(folds_all),
+        'fold_details': folds_all,
+        'has_walk_forward_cv': bool(cv_all)
     }
 
-    # Training Gradient Boosting Regressor
-    gbr.fit(X_train, y_train)
-    p_gbr_train = gbr.predict(X_train)
-    p_gbr_up = np.clip(gbr.predict(X_upcoming), 0.0, 24.0) * (df_pred_all['Peluang Main GW (%)'] / 100.0)
-
-    mae_gb = mean_absolute_error(y_train, p_gbr_train)
-    rmse_gb = np.sqrt(np.mean((y_train - p_gbr_train) ** 2))
-    r2_gb = r2_score(y_train, p_gbr_train)
-
-    models_performance['Gradient Boosting'] = {
-        'mae': round(mae_gb, 4),
-        'rmse': round(rmse_gb, 4),
-        'r2': round(r2_gb, 4),
-        'importance_df': pd.DataFrame({'Fitur': feature_labels, 'Tingkat Kepentingan Fitur (%)': np.round(gbr.feature_importances_ * 100, 2)}).sort_values(by='Tingkat Kepentingan Fitur (%)', ascending=False)
-    }
-
-    # Assign Prediksi ke DataFrame Rangkuman
-    df_pred_all['xPoin (Linear Reg)'] = np.round(p_lr_up, 2)
-    df_pred_all['xPoin (Ridge Reg)'] = np.round(p_ridge_up, 2)
-    df_pred_all['xPoin (Gradient Boosting)'] = np.round(p_gbr_up, 2)
-
-    # Ensemble Weighted Average Prediction
-    df_pred_all['xPoin (Option C Ensemble)'] = np.round(
-        (0.35 * df_pred_all['xPoin (Gradient Boosting)']) + 
-        (0.35 * df_pred_all['xPoin (Ridge Reg)']) + 
-        (0.30 * df_pred_all['xPoin (Linear Reg)']), 
-        2
-    )
+    # Aliases untuk backwards compatibility
+    models_performance['Linear Regression'] = cv_all['Linear Regression'] if cv_all else global_in_sample['Linear Regression']
+    models_performance['Linear Regression']['coef_df'] = pd.DataFrame({'Fitur': overall_labels, 'Bobot Koefisien (β)': np.round(g_lr.coef_, 4)})
+    
+    models_performance['Ridge Regression'] = cv_all['Ridge Regression'] if cv_all else global_in_sample['Ridge Regression']
+    models_performance['Ridge Regression']['coef_df'] = pd.DataFrame({'Fitur': overall_labels, 'Bobot Koefisien (β)': np.round(g_rd.coef_, 4)})
+    
+    models_performance['Gradient Boosting'] = cv_all['Gradient Boosting'] if cv_all else global_in_sample['Gradient Boosting']
+    models_performance['Gradient Boosting']['importance_df'] = models_performance['ALL']['importance_df']
 
     return df_pred_all, models_performance

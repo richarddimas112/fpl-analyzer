@@ -4,10 +4,81 @@ Ultra-polished, responsive Fixture Matrix, Interactive Ticker, Matchday Hub with
 """
 
 from datetime import datetime, timedelta
+import math
 import textwrap
+import numpy as np
 import pandas as pd
 import streamlit as st
-from src.processors import get_team_short_map
+import plotly.express as px
+import plotly.graph_objects as go
+from scipy.stats import poisson
+from src.processors import get_team_short_map, bivariate_dixon_coles_cs_prob
+
+def simulate_bivariate_poisson_match(lambda_h, lambda_a, max_goals=6, rho=-0.06):
+    """
+    Simulasi distribusi probabilitas skor pertandingan menggunakan Bivariate Poisson / Dixon-Coles Model.
+    Menghitung matriks probabilitas P(H=x, A=y), serta probabilitas Home Win, Draw, Away Win,
+    Over/Under 2.5 Goals, Most Likely Score, dan Clean Sheet H & A.
+    """
+    lh = max(0.1, float(lambda_h))
+    la = max(0.1, float(lambda_a))
+    
+    score_matrix = np.zeros((max_goals + 1, max_goals + 1))
+    for x in range(max_goals + 1):
+        for y in range(max_goals + 1):
+            p_ind = poisson.pmf(x, lh) * poisson.pmf(y, la)
+            # Dixon-Coles adjustment for low scores
+            adj = 1.0
+            if x == 0 and y == 0:
+                adj = 1.0 - (lh * la * rho)
+            elif x == 0 and y == 1:
+                adj = 1.0 + (lh * rho)
+            elif x == 1 and y == 0:
+                adj = 1.0 + (la * rho)
+            elif x == 1 and y == 1:
+                adj = 1.0 - rho
+            score_matrix[x, y] = max(0.0, p_ind * adj)
+
+    # Normalize total probability
+    total_p = np.sum(score_matrix)
+    if total_p > 0:
+        score_matrix = score_matrix / total_p
+
+    p_home_win = float(np.sum(np.tril(score_matrix, -1)))
+    p_draw = float(np.sum(np.diag(score_matrix)))
+    p_away_win = float(np.sum(np.triu(score_matrix, 1)))
+
+    p_cs_h = float(np.sum(score_matrix[:, 0]))  # Away scores 0
+    p_cs_a = float(np.sum(score_matrix[0, :]))  # Home scores 0
+
+    # Over / Under 2.5
+    p_under_25 = 0.0
+    for x in range(max_goals + 1):
+        for y in range(max_goals + 1):
+            if x + y <= 2:
+                p_under_25 += score_matrix[x, y]
+    p_over_25 = max(0.0, 1.0 - p_under_25)
+
+    # Most likely score
+    best_idx = np.unravel_index(np.argmax(score_matrix, axis=None), score_matrix.shape)
+    most_likely_score = f"{best_idx[0]}-{best_idx[1]}"
+    most_likely_prob = float(score_matrix[best_idx]) * 100.0
+
+    return {
+        'matrix': score_matrix,
+        'p_home_win': round(p_home_win * 100.0, 1),
+        'p_draw': round(p_draw * 100.0, 1),
+        'p_away_win': round(p_away_win * 100.0, 1),
+        'p_cs_h': round(p_cs_h * 100.0, 1),
+        'p_cs_a': round(p_cs_a * 100.0, 1),
+        'p_over_25': round(p_over_25 * 100.0, 1),
+        'p_under_25': round(p_under_25 * 100.0, 1),
+        'most_likely_score': most_likely_score,
+        'most_likely_prob': round(most_likely_prob, 1),
+        'lambda_h': round(lh, 2),
+        'lambda_a': round(la, 2)
+    }
+
 
 FDR_PALETTE = {
     1: {'bg': '#15803d', 'text': '#ffffff', 'label': 'Sangat Mudah', 'dot': '🟢'},
@@ -453,11 +524,13 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
     # Tab 1: Matchday Hub (Otomatis Gameweek Berikutnya & 10 Match Differentials)
     # Tab 2: Matriks & Ticker FDR 10 Match
     # Tab 3: Komparasi Head-to-Head 2 Klub
+    # Tab 4: Analisis Dampak Home vs Away (FDR, Serang & Bertahan)
     # -------------------------------------------------------------------------
-    tab_matchday, tab_matrix, tab_h2h = st.tabs([
+    tab_matchday, tab_matrix, tab_h2h, tab_home_away = st.tabs([
         "⚔️ Matchday Gameweek Berikutnya (10 Match & Differentials)",
         "📅 Matriks & Ticker FDR 10 Match",
-        "👥 Komparasi Head-to-Head 2 Klub"
+        "👥 Komparasi Head-to-Head 2 Klub",
+        "🏟️ Analisis Pengaruh Home vs Away (FDR, Serang & Bertahan)"
     ])
 
     # =========================================================================
@@ -550,15 +623,15 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                 a_att = a_stats.get('att', 50.0)
                 a_def = a_stats.get('def', 50.0)
 
-                # Differentials:
-                # 1. Home Attack vs Away Defense (Positive = Home Attack heavily favored)
-                h_att_diff = round(h_att - a_def, 1)
+                # Differentials Serang & Bertahan (Menggunakan Modulasi Keunggulan Venue Pertandingan):
+                # 1. Home Attack vs Away Defense (Dengan bonus atmosfer kandang tuan rumah)
+                h_att_diff = round((h_att + 4.0) - (a_def - 4.0), 1)
                 # 2. Home Defense vs Away Attack (Positive = Home Clean Sheet potential high)
-                h_def_diff = round(h_def - a_att, 1)
-                # 3. Away Attack vs Home Defense (Positive = Away Attack heavily favored)
-                a_att_diff = round(a_att - h_def, 1)
+                h_def_diff = round((h_def + 4.0) - (a_att - 4.0), 1)
+                # 3. Away Attack vs Home Defense (Dengan penalti tandang tim tamu)
+                a_att_diff = round((a_att - 4.0) - (h_def + 4.0), 1)
                 # 4. Away Defense vs Home Attack (Positive = Away Clean Sheet potential high)
-                a_def_diff = round(a_def - h_att, 1)
+                a_def_diff = round((a_def - 4.0) - (h_att + 4.0), 1)
 
                 # Scout Verdict Generation
                 h_top_asset = h_stats.get('top_asset', '-')
@@ -1375,3 +1448,706 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                     "Keuntungan Jadwal": st.column_config.TextColumn("Keuntungan Jadwal", width="medium")
                 }
             )
+
+    # =========================================================================
+    # TAB 4: ANALISIS PENGARUH HOME VS AWAY (FDR, SKOR SERANGAN & PERTAHANAN)
+    # =========================================================================
+    with tab_home_away:
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #064e3b 0%, #0f172a 100%); padding: 18px 22px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #10b98133; color: white;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                <div style="max-width: 750px;">
+                    <h3 style="margin: 0; color: #ffffff; font-size: 1.25rem; font-weight: 800;">
+                        🏟️ Analisis Efek Home vs Away: Dampak Venue terhadap Hasil Match, FDR, Serangan & Pertahanan
+                    </h3>
+                    <p style="margin: 6px 0 0 0; color: #cbd5e1; font-size: 0.85rem; line-height: 1.45;">
+                        Di Premier League, faktor kandang (<strong>Home Advantage</strong>) sangat memengaruhi efisiensi serangan, soliditas nirbobol (Clean Sheet), dan validitas tingkat kesulitan <strong>FDR</strong>. Sub-tab ini membedah data empiris hasil pertandingan, mengorelasikannya dengan level FDR, serta menguji ketangguhan <strong>Skor Serangan</strong> dan <strong>Skor Pertahanan</strong> 20 klub.
+                    </p>
+                </div>
+                <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; border-radius: 8px; padding: 8px 14px; text-align: center;">
+                    <div style="font-size: 0.72rem; color: #a7f3d0; text-transform: uppercase; font-weight: 700;">Venue Impact</div>
+                    <div style="font-size: 1.15rem; font-weight: 800; color: #34d399;">Empirical Analytics</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ---------------------------------------------------------------------
+        # 1. Hitung Statistik Laga Selesai Liga & Performa Klub Home vs Away
+        # ---------------------------------------------------------------------
+        finished_fixtures = [f for f in fixtures_data if f.get('finished')]
+        total_finished = len(finished_fixtures)
+
+        if total_finished == 0:
+            st.info("ℹ️ Belum ada pertandingan yang selesai di database musim ini untuk menghasilkan statistik Home vs Away historis.")
+        else:
+            # Hitung metrik liga keseluruhan
+            total_h_wins = 0
+            total_a_wins = 0
+            total_draws = 0
+            total_h_goals = 0
+            total_a_goals = 0
+            total_h_cs = 0
+            total_a_cs = 0
+
+            # Statistik FDR agregat berdasarkan Venue
+            fdr_venue_stats = {
+                2: {'h_m': 0, 'h_w': 0, 'h_d': 0, 'h_l': 0, 'h_gf': 0, 'h_ga': 0, 'h_cs': 0, 'a_m': 0, 'a_w': 0, 'a_d': 0, 'a_l': 0, 'a_gf': 0, 'a_ga': 0, 'a_cs': 0},
+                3: {'h_m': 0, 'h_w': 0, 'h_d': 0, 'h_l': 0, 'h_gf': 0, 'h_ga': 0, 'h_cs': 0, 'a_m': 0, 'a_w': 0, 'a_d': 0, 'a_l': 0, 'a_gf': 0, 'a_ga': 0, 'a_cs': 0},
+                4: {'h_m': 0, 'h_w': 0, 'h_d': 0, 'h_l': 0, 'h_gf': 0, 'h_ga': 0, 'h_cs': 0, 'a_m': 0, 'a_w': 0, 'a_d': 0, 'a_l': 0, 'a_gf': 0, 'a_ga': 0, 'a_cs': 0},
+                5: {'h_m': 0, 'h_w': 0, 'h_d': 0, 'h_l': 0, 'h_gf': 0, 'h_ga': 0, 'h_cs': 0, 'a_m': 0, 'a_w': 0, 'a_d': 0, 'a_l': 0, 'a_gf': 0, 'a_ga': 0, 'a_cs': 0}
+            }
+
+            # Statistik Home vs Away per Klub
+            club_ha_map = {}
+            for t_id, t_name in teams_dict.items():
+                t_short = club_short_map.get(t_id) or club_short_map.get(t_name, t_name[:3].upper())
+                t_info = team_stats_map.get(t_id, {})
+                club_ha_map[t_id] = {
+                    't_id': t_id,
+                    'club': t_name,
+                    'short': t_short,
+                    'category': t_info.get('category', 'Menengah'),
+                    'att_score': t_info.get('att', 50.0),
+                    'def_score': t_info.get('def', 50.0),
+                    'overall_score': t_info.get('overall', 50.0),
+                    'top_asset': t_info.get('top_asset', '-'),
+                    # Home
+                    'h_pld': 0, 'h_w': 0, 'h_d': 0, 'h_l': 0, 'h_gf': 0, 'h_ga': 0, 'h_cs': 0, 'h_pts': 0,
+                    # Away
+                    'a_pld': 0, 'a_w': 0, 'a_d': 0, 'a_l': 0, 'a_gf': 0, 'a_ga': 0, 'a_cs': 0, 'a_pts': 0
+                }
+
+            # Parsing seluruh finished match
+            for f in finished_fixtures:
+                th_id = f.get('team_h')
+                ta_id = f.get('team_a')
+                sh = int(f.get('team_h_score', 0) or 0)
+                sa = int(f.get('team_a_score', 0) or 0)
+                dh = min(5, max(2, int(round(float(f.get('team_h_difficulty', 3) or 3)))))
+                da = min(5, max(2, int(round(float(f.get('team_a_difficulty', 3) or 3)))))
+
+                total_h_goals += sh
+                total_a_goals += sa
+                if sa == 0: total_h_cs += 1
+                if sh == 0: total_a_cs += 1
+
+                if sh > sa:
+                    total_h_wins += 1
+                elif sa > sh:
+                    total_a_wins += 1
+                else:
+                    total_draws += 1
+
+                # Update FDR Breakdown
+                st_h = fdr_venue_stats[dh]
+                st_h['h_m'] += 1
+                st_h['h_gf'] += sh
+                st_h['h_ga'] += sa
+                if sa == 0: st_h['h_cs'] += 1
+                if sh > sa: st_h['h_w'] += 1
+                elif sh == sa: st_h['h_d'] += 1
+                else: st_h['h_l'] += 1
+
+                st_a = fdr_venue_stats[da]
+                st_a['a_m'] += 1
+                st_a['a_gf'] += sa
+                st_a['a_ga'] += sh
+                if sh == 0: st_a['a_cs'] += 1
+                if sa > sh: st_a['a_w'] += 1
+                elif sa == sh: st_a['a_d'] += 1
+                else: st_a['a_l'] += 1
+
+                # Update Klub Home
+                if th_id in club_ha_map:
+                    c = club_ha_map[th_id]
+                    c['h_pld'] += 1
+                    c['h_gf'] += sh
+                    c['h_ga'] += sa
+                    if sa == 0: c['h_cs'] += 1
+                    if sh > sa:
+                        c['h_w'] += 1
+                        c['h_pts'] += 3
+                    elif sh == sa:
+                        c['h_d'] += 1
+                        c['h_pts'] += 1
+                    else:
+                        c['h_l'] += 1
+
+                # Update Klub Away
+                if ta_id in club_ha_map:
+                    c = club_ha_map[ta_id]
+                    c['a_pld'] += 1
+                    c['a_gf'] += sa
+                    c['a_ga'] += sh
+                    if sh == 0: c['a_cs'] += 1
+                    if sa > sh:
+                        c['a_w'] += 1
+                        c['a_pts'] += 3
+                    elif sa == sh:
+                        c['a_d'] += 1
+                        c['a_pts'] += 1
+                    else:
+                        c['a_l'] += 1
+
+            # Rata-rata liga
+            avg_h_goals = total_h_goals / max(total_finished, 1)
+            avg_a_goals = total_a_goals / max(total_finished, 1)
+            pct_h_win = (total_h_wins / max(total_finished, 1)) * 100
+            pct_a_win = (total_a_wins / max(total_finished, 1)) * 100
+            pct_draw = (total_draws / max(total_finished, 1)) * 100
+            pct_h_cs = (total_h_cs / max(total_finished, 1)) * 100
+            pct_a_cs = (total_a_cs / max(total_finished, 1)) * 100
+            goal_adv_pct = ((avg_h_goals - avg_a_goals) / max(avg_a_goals, 0.01)) * 100
+
+            # -----------------------------------------------------------------
+            # 2. Key Metrik Cards (Ringkasan Keunggulan Venue Liga)
+            # -----------------------------------------------------------------
+            kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+            with kpi_col1:
+                st.markdown(f"""
+                <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+                    <div style="font-size: 0.75rem; color: #64748b; font-weight: 700; text-transform: uppercase;">Hasil Pertandingan</div>
+                    <div style="font-size: 1.25rem; font-weight: 800; color: #0f172a; margin: 4px 0;">{pct_h_win:.1f}% Home Win</div>
+                    <div style="font-size: 0.74rem; color: #475569;">Draw: <b>{pct_draw:.1f}%</b> | Away: <b>{pct_a_win:.1f}%</b></div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with kpi_col2:
+                st.markdown(f"""
+                <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+                    <div style="font-size: 0.75rem; color: #64748b; font-weight: 700; text-transform: uppercase;">Produktivitas Gol / Laga</div>
+                    <div style="font-size: 1.25rem; font-weight: 800; color: #10b981; margin: 4px 0;">{avg_h_goals:.2f} vs {avg_a_goals:.2f}</div>
+                    <div style="font-size: 0.74rem; color: #059669;">Keunggulan Tuan Rumah: <b>+{goal_adv_pct:.1f}%</b></div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with kpi_col3:
+                st.markdown(f"""
+                <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+                    <div style="font-size: 0.75rem; color: #64748b; font-weight: 700; text-transform: uppercase;">Rasio Nirbobol (Clean Sheet)</div>
+                    <div style="font-size: 1.25rem; font-weight: 800; color: #3b82f6; margin: 4px 0;">{pct_h_cs:.1f}% vs {pct_a_cs:.1f}%</div>
+                    <div style="font-size: 0.74rem; color: #1e40af;">Total Nirbobol: <b>{total_h_cs} H / {total_a_cs} A</b></div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with kpi_col4:
+                st.markdown(f"""
+                <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+                    <div style="font-size: 0.75rem; color: #64748b; font-weight: 700; text-transform: uppercase;">Sampel Pertandingan</div>
+                    <div style="font-size: 1.25rem; font-weight: 800; color: #6366f1; margin: 4px 0;">{total_finished} Laga Selesai</div>
+                    <div style="font-size: 0.74rem; color: #4338ca;">Total Gol: <b>{total_h_goals + total_a_goals} gol</b> ({((total_h_goals + total_a_goals)/max(total_finished,1)):.2f}/m)</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+
+            # -----------------------------------------------------------------
+            # 3. Sub-bagian: Korelasi Empiris FDR x Venue (Home vs Away)
+            # -----------------------------------------------------------------
+            st.markdown("##### 📊 1. Korelasi Empiris: Tingkat Kesulitan FDR vs Venue (Home vs Away)")
+            st.caption(
+                "Menganalisis seberapa akurat level FDR memprediksi hasil pertandingan ketika tim bertanding di kandang sendiri (Home) dibandingkan saat bertandang (Away)."
+            )
+
+            fdr_chart_data = []
+            fdr_table_data = []
+            fdr_labels_map = {2: 'FDR 2 (Mudah)', 3: 'FDR 3 (Netral)', 4: 'FDR 4 (Sulit)', 5: 'FDR 5 (Sangat Sulit)'}
+
+            for diff in [2, 3, 4, 5]:
+                dt = fdr_venue_stats[diff]
+                h_m = dt['h_m']
+                a_m = dt['a_m']
+                h_win_rate = (dt['h_w'] / h_m * 100) if h_m else 0
+                a_win_rate = (dt['a_w'] / a_m * 100) if a_m else 0
+                h_gf_avg = (dt['h_gf'] / h_m) if h_m else 0
+                a_gf_avg = (dt['a_gf'] / a_m) if a_m else 0
+                h_ga_avg = (dt['h_ga'] / h_m) if h_m else 0
+                a_ga_avg = (dt['a_ga'] / a_m) if a_m else 0
+                h_cs_rate = (dt['h_cs'] / h_m * 100) if h_m else 0
+                a_cs_rate = (dt['a_cs'] / a_m * 100) if a_m else 0
+
+                fdr_table_data.append({
+                    'Tingkat FDR': fdr_labels_map[diff],
+                    'Laga (H / A)': f"{h_m} / {a_m}",
+                    'Win Rate Kandang': f"{h_win_rate:.1f}%",
+                    'Win Rate Tandang': f"{a_win_rate:.1f}%",
+                    'Rata Gol Dicetak (H vs A)': f"{h_gf_avg:.2f} vs {a_gf_avg:.2f}",
+                    'Rata Kebobolan (H vs A)': f"{h_ga_avg:.2f} vs {a_ga_avg:.2f}",
+                    'Peluang Clean Sheet (H vs A)': f"{h_cs_rate:.1f}% vs {a_cs_rate:.1f}%"
+                })
+
+                if h_m > 0:
+                    fdr_chart_data.append({'FDR': f"FDR {diff}", 'Venue': 'Kandang (Home)', 'Rata Gol Dicetak': round(h_gf_avg, 2), 'Rata Kebobolan': round(h_ga_avg, 2), 'Win Rate (%)': round(h_win_rate, 1)})
+                if a_m > 0:
+                    fdr_chart_data.append({'FDR': f"FDR {diff}", 'Venue': 'Tandang (Away)', 'Rata Gol Dicetak': round(a_gf_avg, 2), 'Rata Kebobolan': round(a_ga_avg, 2), 'Win Rate (%)': round(a_win_rate, 1)})
+
+            fdr_col_left, fdr_col_right = st.columns([3, 2])
+            with fdr_col_left:
+                if fdr_chart_data:
+                    df_fdr_chart = pd.DataFrame(fdr_chart_data)
+                    fig_fdr = px.bar(
+                        df_fdr_chart,
+                        x='FDR',
+                        y='Rata Gol Dicetak',
+                        color='Venue',
+                        barmode='group',
+                        color_discrete_map={'Kandang (Home)': '#10b981', 'Tandang (Away)': '#64748b'},
+                        title="Rata-rata Gol Dicetak Tim Berdasarkan Level FDR & Venue",
+                        text_auto=True
+                    )
+                    fig_fdr.update_layout(
+                        margin=dict(l=10, r=10, t=35, b=10),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                        height=280
+                    )
+                    st.plotly_chart(fig_fdr, use_container_width=True)
+
+            with fdr_col_right:
+                st.markdown("""
+                <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; font-size: 0.82rem; height: 100%;">
+                    <div style="font-weight: 800; color: #1e293b; margin-bottom: 8px;">💡 Rekomendasi Transfer & Lineup FPL:</div>
+                    <ul style="margin: 0; padding-left: 18px; color: #475569; line-height: 1.5;">
+                        <li><strong>FDR 3 di Home = FDR 2 di Away:</strong> Penyerang dengan jadwal FDR 3 di kandang sering kali mencetak gol setara atau lebih tinggi dari penyerang dengan FDR 2 di tandang.</li>
+                        <li><strong>Defensive Penalty di Laga Tandang:</strong> Probabilitas nirbobol (Clean Sheet) tim tandang anjlok drastis terutama saat menghadapi tim tuan rumah dengan Skor Serangan di atas 45.</li>
+                        <li><strong>Diskon FDR untuk Tuan Rumah:</strong> Dalam perencanaan jangka panjang, pertimbangkan untuk memberi bobot ekstra (+0.4 poin xP) pada aset yang memiliki rentetan laga kandang.</li>
+                    </ul>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.dataframe(pd.DataFrame(fdr_table_data), use_container_width=True, hide_index=True)
+
+            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+
+            # -----------------------------------------------------------------
+            # 4. Sub-bagian: Pengaruh Skor Serangan & Pertahanan terhadap Venue
+            # -----------------------------------------------------------------
+            st.markdown("##### ⚔️ 2. Hubungan Skor Serangan & Pertahanan terhadap Efisiensi Venue")
+            st.caption(
+                "Memvisualisasikan bagaimana Skor Serangan (Attack Rating) dan Skor Pertahanan (Defense Rating) berinteraksi dengan atmosfer kandang/tandang."
+            )
+
+            # Buat dataset klub untuk visualisasi scatter & bar
+            club_chart_rows = []
+            for t_id, c in club_ha_map.items():
+                h_p = max(c['h_pld'], 1)
+                a_p = max(c['a_pld'], 1)
+                h_gf_avg = c['h_gf'] / h_p
+                a_gf_avg = c['a_gf'] / a_p
+                h_ga_avg = c['h_ga'] / h_p
+                a_ga_avg = c['a_ga'] / a_p
+                h_ppg = c['h_pts'] / h_p
+                a_ppg = c['a_pts'] / a_p
+
+                # Home Advantage Index = Keuntungan Gol + Keuntungan Soliditas Pertahanan + Keuntungan Poin
+                ha_index = round((h_ppg - a_ppg) * 10 + (h_gf_avg - a_gf_avg) * 5 + (a_ga_avg - h_ga_avg) * 5, 1)
+
+                # Klasifikasi Profil Venue Klub
+                if h_ppg >= 1.8 and (h_ppg - a_ppg) >= 0.8:
+                    archetype = "🏰 Home Fortress"
+                    rec_fpl = "Wajib Kapten/Mainkan saat Home, Cadangkan saat Away"
+                elif h_ppg >= 1.7 and a_ppg >= 1.4:
+                    archetype = "⚔️ All-Weather Elite"
+                    rec_fpl = "Aset Inti Jangka Panjang (Set-and-Forget)"
+                elif a_ppg >= h_ppg and a_gf_avg >= 1.2:
+                    archetype = "✈️ Away Counter Specialist"
+                    rec_fpl = "Sangat Bahaya saat Tandang (Transisi Cepat)"
+                elif a_ga_avg >= 2.0:
+                    archetype = "⚠️ Fragile Travellers"
+                    rec_fpl = "Hindari Aset Bertahan saat Tandang"
+                else:
+                    archetype = "⚖️ Moderat / Seimbang"
+                    rec_fpl = "Rotasi Fleksibel Berdasarkan FDR Lawan"
+
+                club_chart_rows.append({
+                    'Klub': c['club'],
+                    'Kode': c['short'],
+                    'Kategori Tim': c['category'],
+                    'Skor Serangan': round(c['att_score'], 1),
+                    'Skor Pertahanan': round(c['def_score'], 1),
+                    'Indeks Kekuatan': round(c['overall_score'], 1),
+                    'Top Aset': c['top_asset'],
+                    'Laga (H / A)': f"{c['h_pld']} / {c['a_pld']}",
+                    'Home W-D-L': f"{c['h_w']}-{c['h_d']}-{c['h_l']}",
+                    'Away W-D-L': f"{c['a_w']}-{c['a_d']}-{c['a_l']}",
+                    'Gol Home (Avg)': round(h_gf_avg, 2),
+                    'Gol Away (Avg)': round(a_gf_avg, 2),
+                    'Selisih Gol (H - A)': round(h_gf_avg - a_gf_avg, 2),
+                    'Kebobolan Home (Avg)': round(h_ga_avg, 2),
+                    'Kebobolan Away (Avg)': round(a_ga_avg, 2),
+                    'CS (H / A)': f"{c['h_cs']} / {c['a_cs']}",
+                    'PPG (Home vs Away)': f"{h_ppg:.2f} vs {a_ppg:.2f}",
+                    'Home Advantage Index': ha_index,
+                    'Profil Venue': archetype,
+                    'Rekomendasi FPL': rec_fpl
+                })
+
+            df_club_ha = pd.DataFrame(club_chart_rows)
+
+            col_scat, col_bar = st.columns(2)
+            with col_scat:
+                # Scatter Plot: Skor Serangan vs Produksi Gol Home vs Away
+                fig_scatter = go.Figure()
+                fig_scatter.add_trace(go.Scatter(
+                    x=df_club_ha['Skor Serangan'],
+                    y=df_club_ha['Gol Home (Avg)'],
+                    mode='markers+text',
+                    name='Laga Kandang (Home)',
+                    text=df_club_ha['Kode'],
+                    textposition='top center',
+                    marker=dict(size=11, color='#10b981', line=dict(width=1, color='#047857'))
+                ))
+                fig_scatter.add_trace(go.Scatter(
+                    x=df_club_ha['Skor Serangan'],
+                    y=df_club_ha['Gol Away (Avg)'],
+                    mode='markers+text',
+                    name='Laga Tandang (Away)',
+                    text=df_club_ha['Kode'],
+                    textposition='bottom center',
+                    marker=dict(size=9, color='#64748b', line=dict(width=1, color='#334155'))
+                ))
+                fig_scatter.update_layout(
+                    title="Korelasi Skor Serangan vs Rata-rata Gol Dicetak",
+                    xaxis_title="Skor Serangan Klub (Attack Rating)",
+                    yaxis_title="Rata-rata Gol per Pertandingan",
+                    margin=dict(l=10, r=10, t=35, b=10),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    height=320
+                )
+                st.plotly_chart(fig_scatter, use_container_width=True)
+
+            with col_bar:
+                # Bar Chart Kebobolan Home vs Away untuk Tim Berdasarkan Skor Pertahanan
+                df_sorted_def = df_club_ha.sort_values(by='Skor Pertahanan', ascending=False).head(10)
+                fig_def = go.Figure()
+                fig_def.add_trace(go.Bar(
+                    name='Kebobolan Home (Avg)',
+                    x=df_sorted_def['Kode'],
+                    y=df_sorted_def['Kebobolan Home (Avg)'],
+                    marker_color='#3b82f6'
+                ))
+                fig_def.add_trace(go.Bar(
+                    name='Kebobolan Away (Avg)',
+                    x=df_sorted_def['Kode'],
+                    y=df_sorted_def['Kebobolan Away (Avg)'],
+                    marker_color='#ef4444'
+                ))
+                fig_def.update_layout(
+                    title="Soliditas Pertahanan: Kebobolan Kandang vs Tandang (Top 10 Klub)",
+                    xaxis_title="Klub",
+                    yaxis_title="Rata-rata Kebobolan / Match",
+                    barmode='group',
+                    margin=dict(l=10, r=10, t=35, b=10),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    height=320
+                )
+                st.plotly_chart(fig_def, use_container_width=True)
+
+            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+
+            # -----------------------------------------------------------------
+            # 5. Sub-bagian: Tabel Analisis 20 Klub: "Home Monsters vs Away Warriors"
+            # -----------------------------------------------------------------
+            st.markdown("##### 🏰 3. Klasifikasi Profil 20 Klub Premier League: Home Monsters vs Away Warriors")
+            st.caption(
+                "Gunakan tabel ini untuk melihat klub mana yang wajib Anda targetkan saat bermain di kandang, dan klub mana yang pertahanannya runtuh saat bermain tandang."
+            )
+
+            flt_col1, flt_col2, flt_col3 = st.columns([2, 2, 2])
+            with flt_col1:
+                archetype_filter = st.selectbox(
+                    "Filter Profil Venue:",
+                    ["Semua Profil", "🏰 Home Fortress", "⚔️ All-Weather Elite", "✈️ Away Counter Specialist", "⚠️ Fragile Travellers", "⚖️ Moderat / Seimbang"],
+                    key="sb_archetype_filter"
+                )
+            with flt_col2:
+                sort_col_opt = st.selectbox(
+                    "Urutkan Berdasarkan:",
+                    ["Home Advantage Index (Tertinggi)", "Skor Serangan (Tertinggi)", "Skor Pertahanan (Tertinggi)", "Gol Home Terbanyak", "Kebobolan Away Terbanyak"],
+                    key="sb_ha_sort_col"
+                )
+            with flt_col3:
+                search_ha_club = st.text_input("Cari Klub Spesifik:", "", placeholder="Ketik nama klub...", key="txt_search_ha_club")
+
+            # Filter data
+            df_display_ha = df_club_ha.copy()
+            if archetype_filter and archetype_filter != "Semua Profil":
+                df_display_ha = df_display_ha[df_display_ha['Profil Venue'] == archetype_filter]
+            if search_ha_club.strip():
+                kw = search_ha_club.strip().lower()
+                df_display_ha = df_display_ha[df_display_ha['Klub'].str.lower().str.contains(kw) | df_display_ha['Kode'].str.lower().str.contains(kw)]
+
+            # Sorting
+            if "Home Advantage Index" in sort_col_opt:
+                df_display_ha = df_display_ha.sort_values(by='Home Advantage Index', ascending=False)
+            elif "Skor Serangan" in sort_col_opt:
+                df_display_ha = df_display_ha.sort_values(by='Skor Serangan', ascending=False)
+            elif "Skor Pertahanan" in sort_col_opt:
+                df_display_ha = df_display_ha.sort_values(by='Skor Pertahanan', ascending=False)
+            elif "Gol Home Terbanyak" in sort_col_opt:
+                df_display_ha = df_display_ha.sort_values(by='Gol Home (Avg)', ascending=False)
+            elif "Kebobolan Away Terbanyak" in sort_col_opt:
+                df_display_ha = df_display_ha.sort_values(by='Kebobolan Away (Avg)', ascending=False)
+
+            st.dataframe(
+                df_display_ha[[
+                    'Klub', 'Kode', 'Profil Venue', 'Home Advantage Index', 'Skor Serangan', 'Skor Pertahanan',
+                    'Laga (H / A)', 'Home W-D-L', 'Away W-D-L', 'Gol Home (Avg)', 'Gol Away (Avg)',
+                    'Kebobolan Home (Avg)', 'Kebobolan Away (Avg)', 'CS (H / A)', 'Rekomendasi FPL'
+                ]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Klub": st.column_config.TextColumn("Klub", pinned=True, width="medium"),
+                    "Kode": st.column_config.TextColumn("Kode", width="small"),
+                    "Profil Venue": st.column_config.TextColumn("Karakteristik Venue", width="medium"),
+                    "Home Advantage Index": st.column_config.NumberColumn("Indeks Home Bias", format="%.1f", help="Semakin tinggi skor, semakin dominan klub saat bermain di kandang sendiri dibanding saat tandang."),
+                    "Skor Serangan": st.column_config.NumberColumn("Skor Serang", format="%.1f"),
+                    "Skor Pertahanan": st.column_config.NumberColumn("Skor Bertahan", format="%.1f"),
+                    "Gol Home (Avg)": st.column_config.NumberColumn("Gol Home", format="%.2f"),
+                    "Gol Away (Avg)": st.column_config.NumberColumn("Gol Away", format="%.2f"),
+                    "Kebobolan Home (Avg)": st.column_config.NumberColumn("GA Home", format="%.2f"),
+                    "Kebobolan Away (Avg)": st.column_config.NumberColumn("GA Away", format="%.2f"),
+                    "Rekomendasi FPL": st.column_config.TextColumn("Panduan Strategi FPL", width="large")
+                }
+            )
+
+            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+
+            # -----------------------------------------------------------------
+            # 6. Sub-bagian: Simulator Matchday Mendatang dengan Dynamic Club-Specific Venue Factor & Poisson Bivariat
+            # -----------------------------------------------------------------
+            st.markdown("##### 🔮 4. Matchday Impact Simulator: Dynamic Club Venue Factor & Model Poisson Bivariat")
+            st.caption(
+                "Menerapkan penyesuaian **Dynamic Club-Specific Venue Factor** (disesuaikan dengan rasio kekuatan kandang/tandang historis masing-masing klub) "
+                "dan **Model Bivariat Dixon-Coles Poisson** untuk mensimulasikan ekspektasi skor gol ($\lambda$), probabilitas hasil (Home/Draw/Away), Clean Sheet, serta Over/Under 2.5."
+            )
+
+            # Hitung Dynamic Club-Specific Venue Factor dictionary
+            # home_boost: seberapa besar klub ini terangkat performanya di kandang vs rata-rata liga (skala -0.15 s/d +0.35)
+            club_dynamic_venue = {}
+            for t_id, c_data in club_ha_map.items():
+                h_p = max(c_data['h_pld'], 1)
+                a_p = max(c_data['a_pld'], 1)
+                h_pts_avg = c_data['h_pts'] / h_p
+                a_pts_avg = c_data['a_pts'] / a_p
+                h_gf_avg = c_data['h_gf'] / h_p
+                a_gf_avg = c_data['a_gf'] / a_p
+                h_ga_avg = c_data['h_ga'] / h_p
+                a_ga_avg = c_data['a_ga'] / a_p
+
+                # Dynamic Venue Factor per klub dihitung dari selisih performa home vs away
+                # Klub benteng kokoh (seperti Aston Villa / Newcastle / Liverpool) memiliki boost lebih tinggi
+                perf_diff = (h_pts_avg - a_pts_avg) * 0.15 + (h_gf_avg - a_gf_avg) * 0.10 + (a_ga_avg - h_ga_avg) * 0.08
+                dynamic_fdr_adj = float(np.clip(0.30 + perf_diff * 0.15, 0.15, 0.60))
+                dynamic_att_boost = float(np.clip(4.0 + perf_diff * 4.0, 1.5, 9.0))
+                dynamic_def_boost = float(np.clip(4.0 + (a_ga_avg - h_ga_avg) * 3.0, 1.0, 8.0))
+
+                club_dynamic_venue[t_id] = {
+                    'fdr_adj': dynamic_fdr_adj,
+                    'att_boost': dynamic_att_boost,
+                    'def_boost': dynamic_def_boost,
+                    'ha_index': round((h_pts_avg - a_pts_avg) * 10 + (h_gf_avg - a_gf_avg) * 5, 1)
+                }
+
+            # Dapatkan gameweek mendatang
+            all_gw_events = sorted(list({f.get('event') for f in fixtures_data if f.get('event') is not None}))
+            unplayed_gw_events = sorted(list({
+                f.get('event') for f in fixtures_data 
+                if f.get('event') is not None and not f.get('finished', False)
+            }))
+            sim_default_gw = unplayed_gw_events[0] if unplayed_gw_events else (all_gw_events[-1] if all_gw_events else 1)
+
+            sim_gw_col, sim_view_col = st.columns([2, 3])
+            with sim_gw_col:
+                selected_sim_gw = st.selectbox(
+                    "Pilih Gameweek untuk Disimulasikan:",
+                    unplayed_gw_events if unplayed_gw_events else all_gw_events,
+                    index=0,
+                    key="sb_selected_sim_gw"
+                )
+            with sim_view_col:
+                sim_mode = st.radio(
+                    "Mode Tampilan Simulator:",
+                    ["📊 Ringkasan Matriks Laga & Poisson", "🎲 Detail Distribusi Skor Probabilistik"],
+                    horizontal=True,
+                    key="sim_view_mode_radio"
+                )
+
+            # Ambil seluruh pertandingan di Gameweek ini
+            sim_fixtures = [f for f in fixtures_data if f.get('event') == selected_sim_gw]
+
+            if not sim_fixtures:
+                st.info(f"Tidak ada jadwal pertandingan ditemukan untuk Gameweek {selected_sim_gw}.")
+            else:
+                sim_rows = []
+                poisson_details = []
+
+                for fix in sim_fixtures:
+                    h_id = fix.get('team_h')
+                    a_id = fix.get('team_a')
+                    h_name = teams_dict.get(h_id, f"Team {h_id}")
+                    a_name = teams_dict.get(a_id, f"Team {a_id}")
+                    h_short = club_short_map.get(h_id) or club_short_map.get(h_name, h_name[:3].upper())
+                    a_short = club_short_map.get(a_id) or club_short_map.get(a_name, a_name[:3].upper())
+
+                    # FDR Asli
+                    fdr_h_raw = fix.get('team_h_difficulty', 3) or 3
+                    fdr_a_raw = fix.get('team_a_difficulty', 3) or 3
+
+                    # Dynamic Club-Specific Venue Adjustment
+                    h_dyn = club_dynamic_venue.get(h_id, {'fdr_adj': 0.35, 'att_boost': 4.5, 'def_boost': 4.0})
+                    a_dyn = club_dynamic_venue.get(a_id, {'fdr_adj': 0.35, 'att_boost': 4.5, 'def_boost': 4.0})
+
+                    # FDR disesuaikan dengan profil spesifik kandang tuan rumah
+                    adj_fdr_h = max(1.0, min(5.0, fdr_h_raw - h_dyn['fdr_adj']))
+                    adj_fdr_a = max(1.0, min(5.0, fdr_a_raw + h_dyn['fdr_adj']))
+
+                    # Skor Serangan & Pertahanan
+                    h_info = team_stats_map.get(h_id, {})
+                    a_info = team_stats_map.get(a_id, {})
+                    h_att = h_info.get('att', 50.0)
+                    h_def = h_info.get('def', 50.0)
+                    a_att = a_info.get('att', 50.0)
+                    a_def = a_info.get('def', 50.0)
+
+                    # Dynamic Venue Mismatch (Tuan rumah mendapat boost spesifik klubnya)
+                    h_att_effective = h_att + h_dyn['att_boost']
+                    h_def_effective = h_def + h_dyn['def_boost']
+                    a_att_effective = a_att - (a_dyn['att_boost'] * 0.6)
+                    a_def_effective = a_def - (a_dyn['def_boost'] * 0.6)
+
+                    # Differentials Serang terkalibrasi konsisten
+                    h_attack_edge = round(h_att_effective - a_def_effective, 1)
+                    a_attack_edge = round(a_att_effective - h_def_effective, 1)
+
+                    # Hitung Lambda Poisson Gol Pertandingan
+                    # Base gol rata-rata Premier League ~ 1.50 (Home) vs 1.25 (Away)
+                    lambda_home = 1.48 * np.exp(h_attack_edge / 40.0)
+                    lambda_away = 1.22 * np.exp(a_attack_edge / 40.0)
+
+                    # Jalankan Model Bivariat Poisson / Dixon-Coles
+                    sim_res = simulate_bivariate_poisson_match(lambda_home, lambda_away, max_goals=5, rho=-0.06)
+
+                    # Outcome tag
+                    p_hw = sim_res['p_home_win']
+                    p_dr = sim_res['p_draw']
+                    p_aw = sim_res['p_away_win']
+                    if p_hw >= 50.0:
+                        outcome_tag = f"🏠 Unggul Tuan Rumah ({p_hw:.0f}%)"
+                    elif p_aw >= 45.0:
+                        outcome_tag = f"✈️ Unggul Tim Tamu ({p_aw:.0f}%)"
+                    elif p_dr >= 30.0 or abs(p_hw - p_aw) < 10.0:
+                        outcome_tag = f"⚖️ Ketat / Imbang ({p_dr:.0f}%)"
+                    else:
+                        outcome_tag = f"🏠 Condong Home ({p_hw:.0f}%)"
+
+                    # Rekomendasi Aset FPL
+                    if h_attack_edge >= 8.0:
+                        rec_target = f"⭐ Penyerang {h_short} ({h_info.get('top_asset', '-')})"
+                    elif a_attack_edge >= 7.0:
+                        rec_target = f"⭐ Penyerang {a_short} ({a_info.get('top_asset', '-')})"
+                    elif sim_res['p_cs_h'] >= 42.0:
+                        rec_target = f"🛡️ Pertahanan {h_short} ({sim_res['p_cs_h']:.0f}% CS)"
+                    elif sim_res['p_cs_a'] >= 38.0:
+                        rec_target = f"🛡️ Pertahanan {a_short} ({sim_res['p_cs_a']:.0f}% CS)"
+                    else:
+                        rec_target = f"🎯 Aset Kunci: {h_short} vs {a_short}"
+
+                    sim_rows.append({
+                        'Pertandingan': f"{h_name} vs {a_name}",
+                        'FDR Asli (H vs A)': f"{fdr_h_raw} vs {fdr_a_raw}",
+                        'Venue-Adjusted FDR': f"{adj_fdr_h:.2f} (H) vs {adj_fdr_a:.2f} (A)",
+                        'Dynamic Home Boost': f"+{h_dyn['fdr_adj']:.2f} FDR / +{h_dyn['att_boost']:.1f} Att",
+                        'Diff Serang Home': f"{'+' if h_attack_edge > 0 else ''}{h_attack_edge:.1f}",
+                        'Diff Serang Away': f"{'+' if a_attack_edge > 0 else ''}{a_attack_edge:.1f}",
+                        'Proyeksi Skor (xG)': f"{sim_res['lambda_h']:.2f} - {sim_res['lambda_a']:.2f}",
+                        'Peluang Hasil (H/D/A)': f"{p_hw:.0f}% / {p_dr:.0f}% / {p_aw:.0f}%",
+                        'Clean Sheet (H / A)': f"{h_short} {sim_res['p_cs_h']:.0f}% | {a_short} {sim_res['p_cs_a']:.0f}%",
+                        'Skor Terfavorit': f"{sim_res['most_likely_score']} ({sim_res['most_likely_prob']:.1f}%)",
+                        'Over 2.5 Gol': f"{sim_res['p_over_25']:.0f}%",
+                        'Rekomendasi Aset FPL': rec_target
+                    })
+
+                    poisson_details.append({
+                        'match_name': f"{h_name} vs {a_name}",
+                        'h_name': h_name,
+                        'a_name': a_name,
+                        'h_short': h_short,
+                        'a_short': a_short,
+                        'sim_res': sim_res,
+                        'rec_target': rec_target,
+                        'h_dyn': h_dyn
+                    })
+
+                df_sim_summary = pd.DataFrame(sim_rows)
+
+                if "Ringkasan" in sim_mode:
+                    st.dataframe(
+                        df_sim_summary[[
+                            'Pertandingan', 'FDR Asli (H vs A)', 'Venue-Adjusted FDR', 'Dynamic Home Boost',
+                            'Diff Serang Home', 'Diff Serang Away', 'Proyeksi Skor (xG)',
+                            'Peluang Hasil (H/D/A)', 'Clean Sheet (H / A)', 'Skor Terfavorit', 'Over 2.5 Gol', 'Rekomendasi Aset FPL'
+                        ]],
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Pertandingan": st.column_config.TextColumn("Pertandingan (Kandang vs Tandang)", pinned=True, width="large"),
+                            "FDR Asli (H vs A)": st.column_config.TextColumn("FDR Asli", width="small"),
+                            "Venue-Adjusted FDR": st.column_config.TextColumn("Dynamic FDR", width="medium", help="FDR yang dikoreksi faktor venue dinamis spesifik keunggulan kandang klub"),
+                            "Dynamic Home Boost": st.column_config.TextColumn("Dynamic Factor", width="medium"),
+                            "Diff Serang Home": st.column_config.TextColumn("Diff Serang (H)", width="small"),
+                            "Diff Serang Away": st.column_config.TextColumn("Diff Serang (A)", width="small"),
+                            "Proyeksi Skor (xG)": st.column_config.TextColumn("Exp Goals (λH-λA)", width="small"),
+                            "Peluang Hasil (H/D/A)": st.column_config.TextColumn("Peluang (H/D/A)", width="medium"),
+                            "Clean Sheet (H / A)": st.column_config.TextColumn("Dixon-Coles CS %", width="medium"),
+                            "Skor Terfavorit": st.column_config.TextColumn("Skor Paling Mungkin", width="medium"),
+                            "Over 2.5 Gol": st.column_config.TextColumn("Over 2.5", width="small"),
+                            "Rekomendasi Aset FPL": st.column_config.TextColumn("Panduan Aset Unggulan", width="large")
+                        }
+                    )
+                else:
+                    # Tampilan Detail Probabilistik Grid per Match
+                    st.markdown("###### 🎲 Matriks Distribusi Skor Pertandingan Bivariat Dixon-Coles Poisson:")
+                    for p_item in poisson_details:
+                        s_res = p_item['sim_res']
+                        with st.expander(f"⚽ {p_item['match_name']} — Proyeksi xG: {s_res['lambda_h']:.2f} vs {s_res['lambda_a']:.2f} | Skor Terfavorit: {s_res['most_likely_score']} ({s_res['most_likely_prob']}%)", expanded=False):
+                            pc1, pc2, pc3, pc4 = st.columns(4)
+                            with pc1:
+                                st.metric("Menang Tuan Rumah (Home)", f"{s_res['p_home_win']}%", f"λ Home = {s_res['lambda_h']:.2f}")
+                            with pc2:
+                                st.metric("Imbang (Draw)", f"{s_res['p_draw']}%")
+                            with pc3:
+                                st.metric("Menang Tim Tamu (Away)", f"{s_res['p_away_win']}%", f"λ Away = {s_res['lambda_a']:.2f}")
+                            with pc4:
+                                st.metric("Peluang Over 2.5 Gol", f"{s_res['p_over_25']}%", f"Under 2.5: {s_res['p_under_25']}%")
+
+                            sc_col1, sc_col2 = st.columns([3, 2])
+                            with sc_col1:
+                                # Heatmap matriks skor
+                                matrix_data = np.round(s_res['matrix'][:5, :5] * 100, 1)
+                                fig_mat = px.imshow(
+                                    matrix_data,
+                                    labels=dict(x=f"Gol {p_item['a_short']} (Away)", y=f"Gol {p_item['h_short']} (Home)", color="Peluang (%)"),
+                                    x=[f"{g} Gol" for g in range(5)],
+                                    y=[f"{g} Gol" for g in range(5)],
+                                    color_continuous_scale="Blues",
+                                    text_auto=True,
+                                    title=f"Distribusi Probabilitas Skor {p_item['h_short']} vs {p_item['a_short']} (%)"
+                                )
+                                fig_mat.update_layout(height=260, margin=dict(l=10, r=10, t=30, b=10))
+                                st.plotly_chart(fig_mat, use_container_width=True)
+
+                            with sc_col2:
+                                st.markdown(f"""
+                                <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; font-size: 0.82rem; height: 100%;">
+                                    <div style="font-weight: 700; color: #1e293b; margin-bottom: 6px;">📋 Rangkuman Simulasi Poisson:</div>
+                                    <ul style="margin: 0; padding-left: 16px; color: #475569; line-height: 1.55;">
+                                        <li><strong>Clean Sheet {p_item['h_short']}:</strong> {s_res['p_cs_h']:.1f}%</li>
+                                        <li><strong>Clean Sheet {p_item['a_short']}:</strong> {s_res['p_cs_a']:.1f}%</li>
+                                        <li><strong>Dynamic Venue Multiplier:</strong> +{p_item['h_dyn']['att_boost']:.1f} Serang, +{p_item['h_dyn']['def_boost']:.1f} Def</li>
+                                        <li><strong>Rekomendasi FPL:</strong> {p_item['rec_target']}</li>
+                                    </ul>
+                                </div>
+                                """, unsafe_allow_html=True)
+

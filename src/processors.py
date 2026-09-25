@@ -12,6 +12,30 @@ from scipy.stats import poisson
 from src.constants import POSITION_MAP, STATUS_MAP
 from src.api import fetch_player_history_raw
 
+def bivariate_dixon_coles_cs_prob(lambda_team, lambda_opp, rho=-0.06):
+    """
+    Menghitung probabilitas Clean Sheet (P(Y = 0)) menggunakan Model Bivariat Dixon-Coles Poisson.
+    Y adalah gol tim lawan, X adalah gol tim pemain.
+    P(Clean Sheet) = sum_{x=0..inf} P(X=x, Y=0).
+    Dixon-Coles mengoreksi korelasi skor rendah (0-0, 1-0, 0-1, 1-1) dengan parameter rho.
+    """
+    lam_team = np.maximum(0.05, np.asarray(lambda_team, dtype=float))
+    lam_opp = np.maximum(0.05, np.asarray(lambda_opp, dtype=float))
+    
+    exp_opp = np.exp(-lam_opp)
+    exp_team = np.exp(-lam_team)
+    
+    # Koreksi parameter Dixon-Coles untuk skor rendah
+    tau_00 = np.clip(1.0 - lam_team * lam_opp * rho, 0.0, 2.0)
+    tau_10 = np.clip(1.0 + lam_opp * rho, 0.0, 2.0)
+    
+    p_00 = tau_00 * exp_team * exp_opp
+    p_10 = tau_10 * lam_team * exp_team * exp_opp
+    p_rest = np.maximum(0.0, 1.0 - exp_team - lam_team * exp_team) * exp_opp
+    
+    prob_cs = np.clip(p_00 + p_10 + p_rest, 0.02, 0.95)
+    return prob_cs
+
 def get_current_gw(fpl_data):
     """Mendeteksi ID Gameweek yang sedang aktif/berjalan."""
     events = fpl_data.get('events', [])
@@ -801,11 +825,22 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
     df['xDC Pts'] = np.array(dc_pts).round(2)
 
     # f. xCS_Pts (Clean Sheet: GK=4, DEF=4, MID=1, FWD=0)
-    # PENTING: Jika Avg Mins (L5M) < 60, set xCS_Pts = 0.0 (aturan FPL minimal 60 menit)
+    # Menggunakan Model Bivariat Dixon-Coles / Poisson (P(Y_opp = 0)) pada level tim 90 menit penuh
+    # Peluang CS (%) merefleksikan probabilitas clean sheet klub sehingga seragam untuk seluruh pemain di klub yang sama.
+    # xCS Pts memperhitungkan syarat FPL minimal 60 menit bermain.
     poin_cs_map = {'GK': 4.0, 'DEF': 4.0, 'MID': 1.0, 'FWD': 0.0}
     poin_cs = df['Posisi'].map(poin_cs_map).fillna(0.0)
-    prob_cs = np.exp(-df['Opponent_xG_per_90_attack'] * mins_ratio)
-    raw_xcs = prob_cs * poin_cs
+    base_opp_xg = df['Opponent_xG_per_90_attack'] if 'Opponent_xG_per_90_attack' in df.columns else pd.Series(1.35, index=df.index)
+    base_team_xg = df['xG per 90'] if 'xG per 90' in df.columns else pd.Series(1.35, index=df.index)
+    
+    # Hitung probabilitas CS klub 90 menit penuh tanpa modulasi menit individual
+    team_prob_cs = bivariate_dixon_coles_cs_prob(base_team_xg, base_opp_xg, rho=-0.06)
+    df['Peluang CS (%)'] = np.round(team_prob_cs * 100.0, 1)
+    
+    # Syarat FPL: Pemain harus bermain >= 60 menit untuk meraih poin Clean Sheet
+    # Probabilitas bermain >= 60 menit diperkirakan dari histori menit bermain (Avg Mins L5M)
+    p_60_mins = np.clip((df['Avg Mins (L5M)'] - 30.0) / 30.0, 0.0, 1.0)
+    raw_xcs = team_prob_cs * poin_cs * p_60_mins
     df['xCS Pts'] = np.where(df['Avg Mins (L5M)'] >= 60.0, raw_xcs, 0.0).round(2)
 
     # Inisialisasi default variabel differential tim
@@ -829,7 +864,7 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
     cols = [
         'id', 'team',
         'Nama Pemain', 'Klub', 'Lawan GW Berikutnya', 'Posisi', 'Harga (£m)', 'xPoin', 'xPoin (Option B)',
-        'Diff Attack Team', 'Diff Defense Team',
+        'Diff Attack Team', 'Diff Defense Team', 'Peluang CS (%)',
         'xG Pred (Match)', 'xA Pred (Match)', 'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
         'Avg Mins (L5M)', 'Total Poin', 'FDR1', 'FDR3', 'FDR5', 'FDR10', 'Form', '% Ownership', 'Net Transfers GW',
         'Transfers In GW', 'Transfers Out GW',
@@ -980,15 +1015,27 @@ def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_
         dc_pts.append(val)
     df['xDC Pts'] = np.array(dc_pts).round(2)
 
-    # 4. xCS Pts (Clean Sheet Points)
-    # Jika Diff Defense positif (pertahanan lebih kokoh dari serangan lawan), peluang Clean Sheet naik
+    # 4. xCS Pts (Clean Sheet Points) menggunakan Model Bivariat Dixon-Coles / Poisson (P(Y_opp = 0)) pada level tim 90 menit penuh
+    # Peluang Clean Sheet (%) merefleksikan probabilitas klub (seragam per klub pada matchday tersebut).
+    # xCS Pts memperhitungkan probabilitas bermain >= 60 menit sesuai regulasi FPL.
     poin_cs_map = {'GK': 4.0, 'DEF': 4.0, 'MID': 1.0, 'FWD': 0.0}
     poin_cs = df['Posisi'].map(poin_cs_map).fillna(0.0)
-    def_suppression = np.clip(1.0 - (df['Diff Defense Team'] / 100.0) * 0.5, 0.4, 1.8)
-    eff_opp_xgc = (df['xGC per 90'] if 'xGC per 90' in df.columns else (df['Opponent_xGC_per_90'] if 'Opponent_xGC_per_90' in df.columns else 1.35)) * def_suppression
-    prob_cs = np.exp(-eff_opp_xgc * mins_ratio)
-    raw_xcs = prob_cs * poin_cs
+    
+    diff_def = df['Diff Defense Team'] if 'Diff Defense Team' in df.columns else pd.Series(0.0, index=df.index)
+    diff_att = df['Diff Attack Team'] if 'Diff Attack Team' in df.columns else pd.Series(0.0, index=df.index)
+    
+    # Base goals Premier League per match ~ 1.35
+    lambda_opp = 1.35 * np.exp(-diff_def / 45.0)
+    lambda_team = 1.35 * np.exp(diff_att / 45.0)
+    
+    # Hitung probabilitas CS tim 90 menit penuh tanpa modulasi menit individual
+    team_prob_cs = bivariate_dixon_coles_cs_prob(lambda_team, lambda_opp, rho=-0.06)
+    df['Peluang CS (%)'] = np.round(team_prob_cs * 100.0, 1)
+    
     avg_mins_col = df['Avg Mins (L5M)'] if 'Avg Mins (L5M)' in df.columns else pd.Series(90.0, index=df.index)
+    # Probabilitas bermain >= 60 menit diperkirakan dari konsistensi menit bermain pemain
+    p_60_mins = np.clip((avg_mins_col - 30.0) / 30.0, 0.0, 1.0)
+    raw_xcs = team_prob_cs * poin_cs * p_60_mins
     df['xCS Pts'] = np.where(avg_mins_col >= 60.0, raw_xcs, 0.0).round(2)
 
     # 5. xBP (Bonus Points)
