@@ -24,6 +24,22 @@ STATUS_MAP = {
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
+# Multipliers for Model B: adjusts xG and xA based on player position (FWD/MID vs DEF/GK)
+# to account for historical 'Goal > xG' performance trends and conversion efficiency.
+POSITION_XG_MULTIPLIER = {
+    'FWD': 1.08,  # Elite finishers overperform xG in key zones
+    'MID': 1.04,  # Attacking midfielders possess high finishing conversion
+    'DEF': 0.88,  # Defenders convert low-probability set-pieces less consistently
+    'GK': 0.00   # Goalkeepers
+}
+
+POSITION_XA_MULTIPLIER = {
+    'FWD': 1.05,  # Key passes to surrounding forwards
+    'MID': 1.06,  # Primary playmakers generate high conversion key passes
+    'DEF': 0.92,  # Crosses from deep have lower conversion rate
+    'GK': 0.50
+}
+
 POS_MODEL_CONFIGS = {
     'FWD': {
         'element_type': 4,
