@@ -734,6 +734,31 @@ def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw, fixtures_da
 
         sorted_hist = sorted(hist, key=lambda m: m.get('round', m.get('event', 0)))
         
+        # Siapkan nilai numerik sekali, lalu gunakan prefix sum untuk rolling
+        # features. Ini menghindari pemotongan dan penjumlahan ulang histori.
+        history_fields = {
+            'minutes': lambda match: int(match.get('minutes', 0)),
+            'total_points': lambda match: int(match.get('total_points', 0)),
+            'expected_goals': lambda match: float(match.get('expected_goals', 0.0)),
+            'expected_assists': lambda match: float(match.get('expected_assists', 0.0)),
+            'expected_goals_conceded': lambda match: float(match.get('expected_goals_conceded', 0.0)),
+            'bps': lambda match: int(match.get('bps', 0)),
+            'ict_index': lambda match: float(match.get('ict_index', 0.0)),
+        }
+        history_values = {
+            field: np.asarray([convert(match) for match in sorted_hist], dtype=float)
+            for field, convert in history_fields.items()
+        }
+        history_prefix = {
+            field: np.concatenate(([0.0], np.cumsum(values)))
+            for field, values in history_values.items()
+        }
+
+        def history_mean(field, end, window):
+            start = max(0, end - window)
+            count = end - start
+            return float((history_prefix[field][end] - history_prefix[field][start]) / count)
+
         # 1. Bangun Data Training dari Pertandingan yang Telah Selesai
         for i in range(len(sorted_hist)):
             m = sorted_hist[i]
@@ -741,9 +766,7 @@ def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw, fixtures_da
             m_round = int(m.get('round', m.get('event', 1)))
             
             # Hitung Rolling Features dari Laga-laga sebelumnya (lagged history)
-            past_matches = sorted_hist[:i] # Pertandingan sebelum laga ini
-            
-            if len(past_matches) == 0:
+            if i == 0:
                 # Cold start untuk match pertama musim ini
                 roll_mins_5 = float(m.get('minutes', 0))
                 roll_pts_3 = float(pts_actual)
@@ -753,15 +776,13 @@ def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw, fixtures_da
                 roll_bps_3 = float(m.get('bps', 0))
                 roll_ict_3 = float(m.get('ict_index', 0.0))
             else:
-                last_5 = past_matches[-5:]
-                last_3 = past_matches[-3:]
-                roll_mins_5 = sum(int(x.get('minutes', 0)) for x in last_5) / float(len(last_5))
-                roll_pts_3 = sum(int(x.get('total_points', 0)) for x in last_3) / float(len(last_3))
-                roll_xg_3 = sum(float(x.get('expected_goals', 0.0)) for x in last_3) / float(len(last_3))
-                roll_xa_3 = sum(float(x.get('expected_assists', 0.0)) for x in last_3) / float(len(last_3))
-                roll_xgc_3 = sum(float(x.get('expected_goals_conceded', 0.0)) for x in last_3) / float(len(last_3))
-                roll_bps_3 = sum(int(x.get('bps', 0)) for x in last_3) / float(len(last_3))
-                roll_ict_3 = sum(float(x.get('ict_index', 0.0)) for x in last_3) / float(len(last_3))
+                roll_mins_5 = history_mean('minutes', i, 5)
+                roll_pts_3 = history_mean('total_points', i, 3)
+                roll_xg_3 = history_mean('expected_goals', i, 3)
+                roll_xa_3 = history_mean('expected_assists', i, 3)
+                roll_xgc_3 = history_mean('expected_goals_conceded', i, 3)
+                roll_bps_3 = history_mean('bps', i, 3)
+                roll_ict_3 = history_mean('ict_index', i, 3)
 
             was_home = 1 if m.get('was_home') else 0
             f_id = m.get('fixture')
@@ -795,16 +816,14 @@ def build_option_c_model_and_view(fpl_data, fdr_summary, current_gw, fixtures_da
         next_fdr = float(f_info.get('FDR1', 3.0))
         next_opp_name = f_info.get('Next_Opponent_Fmt', '-')
         
-        last_5_all = sorted_hist[-5:]
-        last_3_all = sorted_hist[-3:]
-        
-        curr_mins_5 = sum(int(x.get('minutes', 0)) for x in last_5_all) / float(len(last_5_all))
-        curr_pts_3 = sum(int(x.get('total_points', 0)) for x in last_3_all) / float(len(last_3_all))
-        curr_xg_3 = sum(float(x.get('expected_goals', 0.0)) for x in last_3_all) / float(len(last_3_all))
-        curr_xa_3 = sum(float(x.get('expected_assists', 0.0)) for x in last_3_all) / float(len(last_3_all))
-        curr_xgc_3 = sum(float(x.get('expected_goals_conceded', 0.0)) for x in last_3_all) / float(len(last_3_all))
-        curr_bps_3 = sum(int(x.get('bps', 0)) for x in last_3_all) / float(len(last_3_all))
-        curr_ict_3 = sum(float(x.get('ict_index', 0.0)) for x in last_3_all) / float(len(last_3_all))
+        history_len = len(sorted_hist)
+        curr_mins_5 = history_mean('minutes', history_len, 5)
+        curr_pts_3 = history_mean('total_points', history_len, 3)
+        curr_xg_3 = history_mean('expected_goals', history_len, 3)
+        curr_xa_3 = history_mean('expected_assists', history_len, 3)
+        curr_xgc_3 = history_mean('expected_goals_conceded', history_len, 3)
+        curr_bps_3 = history_mean('bps', history_len, 3)
+        curr_ict_3 = history_mean('ict_index', history_len, 3)
 
         current_prediction_features.append({
             'id': p_id,
