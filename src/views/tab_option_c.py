@@ -30,7 +30,7 @@ def render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=None
         # Pilihan Posisi untuk Menampilkan Evaluasi Model
         st.markdown("#### 🧭 Evaluasi Model & Validasi Time-Series per Posisi")
         
-        pos_tabs = st.tabs(["🌐 Seluruh Posisi (Overall)", "⚽ FWD (Penyerang)", "🎯 MID (Gelandang)", "🛡️ DEF (Bek)", "🧤 GK (Kiper)"])
+        pos_tabs = st.tabs(["🌐 All Positions", "⚽ Forwards", "🎯 Midfielders", "🛡️ Defenders", "🧤 Goalkeepers"])
         pos_keys = ["ALL", "FWD", "MID", "DEF", "GK"]
 
         for tab_idx, tab_obj in enumerate(pos_tabs):
@@ -216,6 +216,71 @@ def render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=None
             
             price_caption = f" (Rentang Harga: £{price_range[0]:.1f}m - £{price_range[1]:.1f}m)" if price_range is not None else ""
             st.caption(f"💡 *Tabel rangkuman prediksi menampilkan {len(sorted_df_c)} pemain berdasarkan filter aktif{price_caption}. Dilatih dengan model spesifik per posisi dan divalidasi Walk-Forward CV.*")
+
+            # -----------------------------------------------------------------
+            # INTERACTIVE PLAYER INSPECTION DRAWER (Option C - Sports Broadcast)
+            # -----------------------------------------------------------------
+            st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+            st.markdown("#### 🔍 Kartu Profil & Komparasi Model Option C (Player Inspection Card)")
+
+            c_options = sorted_df_c['Nama Pemain'].tolist()
+            if c_options:
+                c_sel1, c_sel2 = st.columns([2, 4])
+                with c_sel1:
+                    inspect_c_name = st.selectbox(
+                        "Pilih Pemain untuk Diinspeksi (Option C):",
+                        options=c_options,
+                        index=0,
+                        key="optc_inspect_player_sb"
+                    )
+
+                p_c = sorted_df_c[sorted_df_c['Nama Pemain'] == inspect_c_name].iloc[0]
+
+                pos_badge_color = {
+                    'FWD': '#f43f5e',
+                    'MID': '#f59e0b',
+                    'DEF': '#06b6d4',
+                    'GK': '#10b981'
+                }.get(p_c['Posisi'], '#64748b')
+
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #111a2e 0%, #0d1527 100%); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.3); margin-top: 8px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 14px; margin-bottom: 16px;">
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="font-size: 1.35rem; font-weight: 800; color: #ffffff; letter-spacing: -0.02em;">{p_c['Nama Pemain']}</span>
+                                <span style="color: {pos_badge_color}; font-weight: 800; font-size: 0.8rem; font-family: 'JetBrains Mono', monospace; background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1);">{p_c['Posisi']}</span>
+                                <span style="color: #94a3b8; font-size: 0.88rem; font-weight: 600;">{p_c['Klub']}</span>
+                            </div>
+                            <div style="color: #64748b; font-size: 0.8rem; margin-top: 3px; font-family: 'JetBrains Mono', monospace;">
+                                Lawan: <b style="color: #e2e8f0;">{p_c.get('Lawan GW Berikutnya', '-')}</b> &bull; FDR: <b style="color: #06b6d4;">{p_c.get('FDR1', 3.0):.1f}</b> &bull; Harga: <b style="color: #38ef7d;">£{p_c['Harga (£m)']:.1f}m</b> &bull; Peluang Main: <b>{p_c.get('Peluang Main GW (%)', 100):.0f}%</b>
+                            </div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="font-size: 0.72rem; color: #94a3b8; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; font-family: 'JetBrains Mono', monospace;">Option C Ensemble xPoin</div>
+                            <div style="font-size: 2.1rem; font-weight: 900; color: #a855f7; font-family: 'JetBrains Mono', monospace; line-height: 1.1;">
+                                {p_c['xPoin (Option C Ensemble)']:.2f} <span style="font-size: 0.9rem; font-weight: 600; color: #64748b;">pts</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div style="font-size: 0.76rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace;">
+                        🤖 Komparasi Multi-Model ML &amp; Tren Musim Berjalan
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                cm1, cm2, cm3, cm4, cm5 = st.columns(5)
+                with cm1:
+                    st.metric("Gradient Boosting", f"{p_c.get('xPoin (Gradient Boosting)', 0.0):.2f} pts")
+                with cm2:
+                    st.metric("Ridge Regression", f"{p_c.get('xPoin (Ridge Reg)', 0.0):.2f} pts")
+                with cm3:
+                    st.metric("Linear Regression", f"{p_c.get('xPoin (Linear Reg)', 0.0):.2f} pts")
+                with cm4:
+                    st.metric("Avg Poin (L3M)", f"{p_c.get('roll_pts_3', 0.0):.2f} pts")
+                with cm5:
+                    st.metric("Avg xG (L3M)", f"{p_c.get('roll_xg_3', 0.0):.2f}")
     else:
         st.warning("Belum ada data history musim berjalan yang cukup untuk melatih model Option C.")
 

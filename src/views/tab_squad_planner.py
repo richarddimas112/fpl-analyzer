@@ -534,8 +534,8 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
             )
 
             sync_method_tabs = st.tabs([
-                "🌐 Tarik Otomatis via FPL ID / URL",
-                "📋 Impor Cepat via Tempel Teks (Instan & Tanpa Login)"
+                "🌐 Sync with FPL",
+                "📋 Paste Squad"
             ])
 
             # TAB 1: SYNC VIA TEAM ID & OPTIONAL COOKIE
@@ -584,7 +584,7 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
                         **2. Mengapa Hasil Tarikan Tanpa Cookie Menampilkan GW 4?**:
                         - Di FPL resmi, **Premier League sengaja merahasiakan seluruh transfer sebelum deadline** dari publik agar lawan di liga Anda tidak bisa melihat transfer rahasia Anda.
                         - Endpoint publik hanya menampilkan susunan resmi yang terkunci pada deadline terakhir (GW 4).
-                        - **Jika Anda tidak ingin repot mencari cookie**, gunakan tab **'📋 Impor Cepat via Tempel Teks'** di samping untuk memasukkan 15 nama pemain saat ini secara instan!
+                        - **Jika Anda tidak ingin repot mencari cookie**, gunakan tab **'📋 Paste Squad'** di samping untuk memasukkan 15 nama pemain saat ini secara instan!
                         """
                     )
 
@@ -1082,7 +1082,7 @@ def render_tab_squad_planner(players_df, fpl_data, fdr_summary, current_gw, df_o
     with st.expander("🛠️ **Panel Penggantian Pemain (Ganti Pemain di Setiap Slot)**", expanded=True):
         st.write("Ubah pemain pada salah satu dari 15 slot di bawah. Daftar pilihan otomatis disaring sesuai posisi slot.")
         
-        pos_tabs = st.tabs(["🧤 Kiper (2 GKP)", "🛡️ Bek (5 DEF)", "🎯 Gelandang (5 MID)", "⚡ Penyerang (3 FWD)", "🔁 Tukar Cepat (Swap Tool)"])
+        pos_tabs = st.tabs(["🧤 Goalkeepers", "🛡️ Defenders", "🎯 Midfielders", "⚡ Forwards", "🔁 Quick Swap"])
         
         # Helper to format player selectbox option
         player_dict_by_id = {int(r['id']): r for _, r in df_merged.iterrows()}

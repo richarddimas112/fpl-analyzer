@@ -527,10 +527,10 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
     # Tab 4: Analisis Dampak Home vs Away (FDR, Serang & Bertahan)
     # -------------------------------------------------------------------------
     tab_matchday, tab_matrix, tab_h2h, tab_home_away = st.tabs([
-        "⚔️ Matchday Gameweek Berikutnya (10 Match & Differentials)",
-        "📅 Matriks & Ticker FDR 10 Match",
-        "👥 Komparasi Head-to-Head 2 Klub",
-        "🏟️ Analisis Pengaruh Home vs Away (FDR, Serang & Bertahan)"
+        "⚔️ Next Gameweek",
+        "📅 Fixture Difficulty",
+        "👥 Club H2H",
+        "🏟️ Home vs Away"
     ])
 
     # =========================================================================

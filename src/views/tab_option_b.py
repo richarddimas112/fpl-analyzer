@@ -92,7 +92,7 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
         st.metric("Top xA Pred (Match)", f"{top_xa_match['Nama Pemain']} ({top_xa_match['xA Pred (Match)']:.2f})" if top_xa_match is not None else "-")
 
     with st.expander("🤖 Detail Model Regresi xG & xA (Match-Level Prediction)", expanded=False):
-        m_tab1, m_tab2 = st.tabs(["⚽ Model Prediksi xG", "🎯 Model Prediksi xA"])
+        m_tab1, m_tab2 = st.tabs(["⚽ xG Prediction", "🎯 xA Prediction"])
         with m_tab1:
             st.markdown("#### 📐 Model Prediksi xG (Regresi Linier)")
             st.info(
@@ -563,4 +563,3 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
         }
     )
     st.caption("💡 *Option B Formula: xPoin = xMins_Pts + xG_Pts(diff_att * Pos_xG_Mult) + xA_Pts(diff_att * Pos_xA_Mult) + xSaves_Pts + xDC_Pts(diff_def) + xCS_Pts(Dixon-Coles CS%) + xBP.*")
-
