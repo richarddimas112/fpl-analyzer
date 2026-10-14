@@ -58,6 +58,83 @@ def load_historical_training_data():
             return pd.DataFrame()
     return pd.DataFrame()
 
+
+def compute_automatic_position_multipliers(players_data, fallback_xg=None, fallback_xa=None):
+    """
+    Menghitung Weighted Multiplier Posisi secara otomatis berbasis agregasi riwayat 
+    efisiensi konversi performa riil:
+      - xG Multiplier = sum(Gol) / sum(xG)
+      - xA Multiplier = sum(Asis) / sum(xA)
+    Dikelompokkan berdasarkan posisi pemain (FWD, MID, DEF, GK).
+    """
+    if fallback_xg is None:
+        fallback_xg = POSITION_XG_MULTIPLIER
+    if fallback_xa is None:
+        fallback_xa = POSITION_XA_MULTIPLIER
+
+    if isinstance(players_data, pd.DataFrame):
+        df = players_data.copy()
+    else:
+        df = pd.DataFrame(players_data)
+
+    pos_map = {1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}
+    if 'Posisi' not in df.columns and 'element_type' in df.columns:
+        df['Posisi'] = df['element_type'].map(pos_map)
+
+    g_col = 'Gol' if 'Gol' in df.columns else ('goals_scored' if 'goals_scored' in df.columns else None)
+    xg_col = 'xG' if 'xG' in df.columns else ('expected_goals' if 'expected_goals' in df.columns else None)
+    a_col = 'Asis' if 'Asis' in df.columns else ('assists' if 'assists' in df.columns else None)
+    xa_col = 'xA' if 'xA' in df.columns else ('expected_assists' if 'expected_assists' in df.columns else None)
+
+    if not g_col or not xg_col or not a_col or not xa_col or 'Posisi' not in df.columns:
+        return dict(fallback_xg), dict(fallback_xa), {}
+
+    for c in [g_col, xg_col, a_col, xa_col]:
+        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
+
+    agg = df.groupby('Posisi')[[g_col, xg_col, a_col, xa_col]].sum()
+
+    auto_xg = {}
+    auto_xa = {}
+    stats_dict = {}
+
+    for pos in ['FWD', 'MID', 'DEF', 'GK']:
+        if pos in agg.index:
+            g = float(agg.loc[pos, g_col])
+            xg = float(agg.loc[pos, xg_col])
+            a = float(agg.loc[pos, a_col])
+            xa = float(agg.loc[pos, xa_col])
+        else:
+            g, xg, a, xa = 0.0, 0.0, 0.0, 0.0
+
+        if pos == 'GK':
+            # Goalkeepers tidak mengambil tembakan ofensif reguler; proteksi 0.00x
+            m_xg = 0.00
+            m_xa = round(float(a / xa), 2) if xa > 0.1 else float(fallback_xa.get('GK', 0.50))
+            m_xa = float(np.clip(m_xa, 0.20, 1.50))
+        else:
+            fb_g = float(fallback_xg.get(pos, 1.0))
+            fb_a = float(fallback_xa.get(pos, 1.0))
+            # Rasio konversi aktual terhadap ekspektasi statistik
+            m_xg = round(float(g / xg), 2) if xg > 0.5 else fb_g
+            m_xa = round(float(a / xa), 2) if xa > 0.5 else fb_a
+            # Pembatasan realistis untuk mencegah anomali pembagian di awal gameweek
+            m_xg = float(np.clip(m_xg, 0.50, 2.00))
+            m_xa = float(np.clip(m_xa, 0.50, 2.00))
+
+        auto_xg[pos] = m_xg
+        auto_xa[pos] = m_xa
+        stats_dict[pos] = {
+            'goals': g,
+            'xg': round(xg, 2),
+            'assists': a,
+            'xa': round(xa, 2),
+            'xg_ratio': m_xg,
+            'xa_ratio': m_xa
+        }
+
+    return auto_xg, auto_xa, stats_dict
+
 def format_setpiece_order(val):
     """Memformat urutan set-piece menjadi label yang jelas."""
     if pd.isnull(val) or val is None or str(val).strip() == "":
@@ -800,15 +877,17 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
     ).round(2)
 
     # b. xG_Pts & xA_Pts with Normalized Points Contribution Formula:
-    # Menggunakan weighted multiplier per posisi (FWD/MID vs DEF/GK) yang merefleksikan tren historis 'Goal > xG' (conversion efficiency):
-    # FWD (1.08x), MID (1.04x) memiliki finishing conversion lebih tajam, sedangkan DEF (0.88x) dari set-piece sulit dikonversi.
+    # Weighted Multiplier Posisi dihitung OTOMATIS secara dinamis berbasis riwayat
+    # agregasi rasio performa aktual: sum(Gol)/sum(xG) dan sum(Asis)/sum(xA) per posisi (FWD, MID, DEF, GK).
     # Formula Kontribusi Poin Ternormalisasi:
     # xG Pts = xG Pred (Match) * Poin Gol Posisi * Pos_xG_Multiplier
     # xA Pts = xA Pred (Match) * 3.0 * Pos_xA_Multiplier
     poin_gol_map = {'GK': 10.0, 'DEF': 6.0, 'MID': 5.0, 'FWD': 4.0}
     poin_gol = df['Posisi'].map(poin_gol_map).fillna(4.0)
-    pos_xg_mult = df['Posisi'].map(POSITION_XG_MULTIPLIER).fillna(1.0)
-    pos_xa_mult = df['Posisi'].map(POSITION_XA_MULTIPLIER).fillna(1.0)
+    
+    auto_xg_mult, auto_xa_mult, _ = compute_automatic_position_multipliers(df)
+    pos_xg_mult = df['Posisi'].map(auto_xg_mult).fillna(1.0)
+    pos_xa_mult = df['Posisi'].map(auto_xa_mult).fillna(1.0)
 
     df['xG Mult'] = pos_xg_mult.round(2)
     df['xA Mult'] = pos_xa_mult.round(2)
@@ -896,10 +975,11 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
     return df[valid_cols], team_dict
 
 
-def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_diffs_map: dict, _opt_b_models: tuple = None) -> pd.DataFrame:
+def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_diffs_map: dict, _opt_b_models: tuple = None, custom_multipliers: tuple = None) -> pd.DataFrame:
     """
     Menyematkan 'Diff Attack Team' dan 'Diff Defense Team' ke setiap pemain berdasarkan klubnya,
-    kemudian merekalibrasi model Option B (xG Pred, xA Pred, xDC Pts, xCS Pts, xBP, dan xPoin).
+    kemudian merekalibrasi model Option B (xG Pred, xA Pred, xDC Pts, xCS Pts, xBP, dan xPoin)
+    menggunakan Weighted Multiplier Posisi yang dihitung OTOMATIS dari data histori performa aktual.
     
     Fitur Model Prediksi xG: Opponent_xGC_per_90, was_home, form, thread_per_90, FDR, Diff Attack Team
     Fitur Model Prediksi xA: Opponent_xGC_per_90, was_home, is_setpiece_taker, form, creativity_per_90, FDR, Diff Attack Team
@@ -1002,15 +1082,21 @@ def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_
         )
 
     # 2. xG Pts dan xA Pts with Normalized Points Contribution Formula:
-    # Menggunakan weighted multiplier per posisi (FWD/MID vs DEF/GK) yang merefleksikan tren historis 'Goal > xG' (conversion efficiency):
-    # FWD (1.08x), MID (1.04x) memiliki finishing conversion lebih tajam, sedangkan DEF (0.88x) dari set-piece sulit dikonversi.
+    # Menggunakan Weighted Multiplier Posisi yang dihitung OTOMATIS secara dinamis dari histori xG vs G dan xA vs A
+    # (atau kustom jika ditentukan secara eksplisit):
     # Formula Kontribusi Poin Ternormalisasi:
     # xG Pts = xG Pred (Match) * Poin Gol Posisi * Pos_xG_Multiplier
     # xA Pts = xA Pred (Match) * 3.0 * Pos_xA_Multiplier
     poin_gol_map = {'GK': 10.0, 'DEF': 6.0, 'MID': 5.0, 'FWD': 4.0}
     poin_gol = df['Posisi'].map(poin_gol_map).fillna(4.0)
-    pos_xg_mult = df['Posisi'].map(POSITION_XG_MULTIPLIER).fillna(1.0)
-    pos_xa_mult = df['Posisi'].map(POSITION_XA_MULTIPLIER).fillna(1.0)
+
+    if custom_multipliers and len(custom_multipliers) == 2:
+        active_xg_mult, active_xa_mult = custom_multipliers
+    else:
+        active_xg_mult, active_xa_mult, _ = compute_automatic_position_multipliers(df)
+
+    pos_xg_mult = df['Posisi'].map(active_xg_mult).fillna(1.0)
+    pos_xa_mult = df['Posisi'].map(active_xa_mult).fillna(1.0)
 
     df['xG Mult'] = pos_xg_mult.round(2)
     df['xA Mult'] = pos_xa_mult.round(2)
