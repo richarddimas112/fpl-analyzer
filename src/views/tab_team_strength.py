@@ -338,11 +338,11 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
         st.markdown("---")
         st.markdown("##### 📊 Visualisasi Perbandingan & Analisis Klub")
 
-        v_tab1, v_tab2, v_tab3, v_tab4, v_tab5 = st.tabs([
+        v_tab4, v_tab1, v_tab2, v_tab3, v_tab5 = st.tabs([
+            "🔍 Deep-Dive Analisis Klub & Top Aset FPL",
             "🏆 Komparasi Bar Chart Tim",
             "⚔️ vs 🛡️ Matriks Ofensif vs Defensif (Kuadran)",
             "💰 Efisiensi Nilai Skuad (Poin vs Harga)",
-            "🔍 Deep-Dive Analisis Klub & Top Aset FPL",
             "🎯 Dispersi Poin & Single-Player Dependency"
         ])
 
