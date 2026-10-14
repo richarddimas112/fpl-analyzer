@@ -263,6 +263,14 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
     """
     teams = _fpl_data.get('teams', []) if _fpl_data else []
     records = []
+
+    # Kelompokkan pemain sekali; tanpa ini seluruh DataFrame dipindai ulang
+    # untuk setiap tim.
+    group_column = 'team' if 'team' in players_df.columns else 'Klub'
+    players_by_team = {
+        team_key: team_players
+        for team_key, team_players in players_df.groupby(group_column, sort=False)
+    } if group_column in players_df.columns else {}
     
     for t in teams:
         t_id = t['id']
@@ -270,10 +278,8 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
         t_short = t.get('short_name', '')
         
         # Filter players for this team
-        if 'team' in players_df.columns:
-            tp = players_df[players_df['team'] == t_id]
-        else:
-            tp = players_df[players_df['Klub'] == t_name]
+        lookup_key = t_id if group_column == 'team' else t_name
+        tp = players_by_team.get(lookup_key, players_df.iloc[0:0])
             
         total_players = len(tp)
         if total_players > 0:
@@ -996,17 +1002,20 @@ def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_
             df['Diff Defense Team'] = 0.0
         return df
 
-    # Map nilai differential tim
-    def get_diff_val(row, metric_key):
-        c_name = row.get('Klub')
-        t_id = row.get('team')
+    # Lookup sekali per pemain tanpa membangun Series untuk setiap baris
+    # seperti yang dilakukan DataFrame.apply(axis=1).
+    club_values = df['Klub'] if 'Klub' in df.columns else pd.Series([None] * len(df), index=df.index)
+    team_values = df['team'] if 'team' in df.columns else pd.Series([None] * len(df), index=df.index)
+
+    def get_diff_info(c_name, t_id):
         info = team_diffs_map.get(c_name) or team_diffs_map.get(str(c_name)) or team_diffs_map.get(t_id) or team_diffs_map.get(str(t_id), {})
         if isinstance(info, dict):
-            return float(info.get(metric_key, 0.0))
-        return 0.0
+            return info
+        return {}
 
-    df['Diff Attack Team'] = df.apply(lambda r: get_diff_val(r, 'diff_attack'), axis=1)
-    df['Diff Defense Team'] = df.apply(lambda r: get_diff_val(r, 'diff_defense'), axis=1)
+    diff_infos = [get_diff_info(club, team) for club, team in zip(club_values, team_values)]
+    df['Diff Attack Team'] = [float(info.get('diff_attack', 0.0)) for info in diff_infos]
+    df['Diff Defense Team'] = [float(info.get('diff_defense', 0.0)) for info in diff_infos]
 
     mins_ratio = df['Avg Mins (L5M)'] / 90.0
 
