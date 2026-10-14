@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+from src.processors import compute_automatic_position_multipliers
 from src.firebase_client import (
     load_firebase_config,
     fetch_gw_differentials_from_firestore,
@@ -390,46 +391,99 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
     st.markdown("#### 📋 Tabel Rangkuman Dekonstruksi Komponen xPoin (Option B)")
     
     # -------------------------------------------------------------------------
-    # INTERACTIVE TOGGLE & SLIDERS FOR POSITION WEIGHTED MULTIPLIERS
+    # AUTOMATIC / DYNAMIC POSITION WEIGHTED MULTIPLIERS (xG vs G & xA vs A)
     # -------------------------------------------------------------------------
-    with st.expander("⚙️ Kalibrasi Weighted Multiplier Posisi (Goal > xG & Assist > xA Tuning)", expanded=False):
-        c_tog1, c_tog2 = st.columns([2, 4])
-        with c_tog1:
+    # Hitung rasio historis otomatis dari dataset pemain saat ini
+    auto_xg_calc, auto_xa_calc, pos_history_stats = compute_automatic_position_multipliers(filtered_players)
+
+    with st.expander("⚙️ Kalibrasi Weighted Multiplier Posisi (Otomatis Berbasis History xG vs G & xA vs A)", expanded=True):
+        c_mode, c_tog = st.columns([3, 2])
+        with c_mode:
+            mult_method = st.radio(
+                "Metode Penentuan Weighted Multiplier Posisi:",
+                options=[
+                    "🤖 Otomatis (Dihitung dari History xG vs G & xA vs A)",
+                    "🛠️ Manual Custom (Penyesuaian Slider Bebas)"
+                ],
+                index=0,
+                key="optb_mult_mode_radio",
+                help="Mode Otomatis secara dinamis menghitung rasio agregat efisiensi konversi performa riil (Gol/xG dan Asis/xA) untuk tiap posisi pemain."
+            )
+        with c_tog:
             use_weighted = st.toggle(
                 "Aktifkan Weighted Multiplier Posisi",
                 value=True,
                 help="Bila aktif, menerapkan multiplier terbobot posisi (FWD/MID vs DEF/GK) berdasarkan tren konversi historis.",
                 key="toggle_pos_weighted_mult"
             )
-        with c_tog2:
-            st.caption("💡 *Sesuaikan slider di bawah untuk menguji skenario efisiensi penyelesaian (finishing) & kreasi peluang per posisi secara realtime.*")
 
-        if use_weighted:
+        if not use_weighted:
+            active_xg_mult = {'FWD': 1.0, 'MID': 1.0, 'DEF': 1.0, 'GK': 0.0}
+            active_xa_mult = {'FWD': 1.0, 'MID': 1.0, 'DEF': 1.0, 'GK': 1.0}
+            st.info("ℹ️ **Mode Mentah (Non-Weighted)**: Seluruh pengali posisi diset ke `1.00x` (tanpa pembobotan).")
+        elif mult_method.startswith("🤖"):
+            active_xg_mult = auto_xg_calc
+            active_xa_mult = auto_xa_calc
+            st.success(
+                "🤖 **Weighted Multiplier Posisi Otomatis Aktif**: Nilai multiplier di bawah dihitung otomatis "
+                "dari riwayat rasio agregat performa aktual: **xG Mult = ∑ Gol / ∑ xG** dan **xA Mult = ∑ Asis / ∑ xA**."
+            )
+
+            # Display Auto Multiplier Cards
+            c_fwd, c_mid, c_def, c_gk = st.columns(4)
+            cards_info = [
+                ("⚽ FWD (Penyerang)", "FWD", c_fwd, "border-l-red-500", "4 pts/Gol"),
+                ("🎯 MID (Gelandang)", "MID", c_mid, "border-l-amber-500", "5 pts/Gol"),
+                ("🛡️ DEF (Bek)", "DEF", c_def, "border-l-blue-500", "6 pts/Gol"),
+                ("🧤 GK (Kiper)", "GK", c_gk, "border-l-emerald-500", "10 pts/Gol")
+            ]
+
+            for title, p_key, col_obj, border_cls, pts_label in cards_info:
+                with col_obj:
+                    st.markdown(f"**{title}**")
+                    p_st = pos_history_stats.get(p_key, {})
+                    xg_val = active_xg_mult.get(p_key, 1.0)
+                    xa_val = active_xa_mult.get(p_key, 1.0)
+                    st.markdown(
+                        f"""
+                        <div style="background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; margin-bottom: 8px;">
+                            <div style="font-size: 0.75rem; color: #64748b; font-weight: 600;">{pts_label}</div>
+                            <div style="margin-top: 4px; font-size: 0.82rem;">
+                                <b>xG Mult:</b> <span style="font-family: monospace; font-weight: 700; color: #2563eb;">{xg_val:.2f}x</span>
+                                <div style="font-size: 0.72rem; color: #64748b;">(G: {p_st.get('goals', 0):.0f} / xG: {p_st.get('xg', 0):.1f})</div>
+                            </div>
+                            <div style="margin-top: 4px; font-size: 0.82rem;">
+                                <b>xA Mult:</b> <span style="font-family: monospace; font-weight: 700; color: #d97706;">{xa_val:.2f}x</span>
+                                <div style="font-size: 0.72rem; color: #64748b;">(A: {p_st.get('assists', 0):.0f} / xA: {p_st.get('xa', 0):.1f})</div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+        else:
+            # Mode Manual Tuning
+            st.caption("💡 *Sesuaikan slider di bawah untuk menguji skenario efisiensi penyelesaian (finishing) & kreasi peluang per posisi secara realtime.*")
             c_fwd, c_mid, c_def, c_gk = st.columns(4)
             with c_fwd:
                 st.markdown("**⚽ FWD (Penyerang)**")
-                fwd_xg_m = st.slider("xG Multiplier (FWD)", 0.70, 1.40, 1.08, 0.01, key="slider_fwd_xg")
-                fwd_xa_m = st.slider("xA Multiplier (FWD)", 0.70, 1.40, 1.05, 0.01, key="slider_fwd_xa")
+                fwd_xg_m = st.slider("xG Multiplier (FWD)", 0.50, 2.00, float(auto_xg_calc.get('FWD', 1.08)), 0.01, key="slider_fwd_xg")
+                fwd_xa_m = st.slider("xA Multiplier (FWD)", 0.50, 2.00, float(auto_xa_calc.get('FWD', 1.05)), 0.01, key="slider_fwd_xa")
             with c_mid:
                 st.markdown("**🎯 MID (Gelandang)**")
-                mid_xg_m = st.slider("xG Multiplier (MID)", 0.70, 1.40, 1.04, 0.01, key="slider_mid_xg")
-                mid_xa_m = st.slider("xA Multiplier (MID)", 0.70, 1.40, 1.06, 0.01, key="slider_mid_xa")
+                mid_xg_m = st.slider("xG Multiplier (MID)", 0.50, 2.00, float(auto_xg_calc.get('MID', 1.04)), 0.01, key="slider_mid_xg")
+                mid_xa_m = st.slider("xA Multiplier (MID)", 0.50, 2.00, float(auto_xa_calc.get('MID', 1.06)), 0.01, key="slider_mid_xa")
             with c_def:
                 st.markdown("**🛡️ DEF (Bek)**")
-                def_xg_m = st.slider("xG Multiplier (DEF)", 0.50, 1.30, 0.88, 0.01, key="slider_def_xg")
-                def_xa_m = st.slider("xA Multiplier (DEF)", 0.50, 1.30, 0.92, 0.01, key="slider_def_xa")
+                def_xg_m = st.slider("xG Multiplier (DEF)", 0.50, 2.00, float(auto_xg_calc.get('DEF', 0.88)), 0.01, key="slider_def_xg")
+                def_xa_m = st.slider("xA Multiplier (DEF)", 0.50, 2.00, float(auto_xa_calc.get('DEF', 0.92)), 0.01, key="slider_def_xa")
             with c_gk:
                 st.markdown("**🧤 GK (Kiper)**")
                 st.write("xG Mult: `0.00x` *(Proteksi Kiper)*")
-                gk_xa_m = st.slider("xA Multiplier (GK)", 0.00, 1.00, 0.50, 0.05, key="slider_gk_xa")
+                gk_xa_m = st.slider("xA Multiplier (GK)", 0.00, 1.50, float(auto_xa_calc.get('GK', 0.50)), 0.05, key="slider_gk_xa")
                 gk_xg_m = 0.00
 
             active_xg_mult = {'FWD': fwd_xg_m, 'MID': mid_xg_m, 'DEF': def_xg_m, 'GK': gk_xg_m}
             active_xa_mult = {'FWD': fwd_xa_m, 'MID': mid_xa_m, 'DEF': def_xa_m, 'GK': gk_xa_m}
-        else:
-            active_xg_mult = {'FWD': 1.0, 'MID': 1.0, 'DEF': 1.0, 'GK': 0.0}
-            active_xa_mult = {'FWD': 1.0, 'MID': 1.0, 'DEF': 1.0, 'GK': 1.0}
-            st.info("ℹ️ Mode mentah (tanpa weighted multiplier): Seluruh pengali posisi diset ke 1.00x.")
 
     # Rekalkulasi xG Pts, xA Pts, dan xPoin (Option B) secara dinamis sesuai multiplier aktif
     poin_gol_map = {'GK': 10.0, 'DEF': 6.0, 'MID': 5.0, 'FWD': 4.0}
@@ -449,11 +503,16 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
     # Re-sort descending based on recalibrated Option B xPoin
     sorted_optb = sorted_optb.sort_values(by="xPoin (Option B)", ascending=False)
 
+    fwd_m_str = f"FWD: {active_xg_mult.get('FWD', 1.08):.2f}x xG / {active_xa_mult.get('FWD', 1.05):.2f}x xA"
+    mid_m_str = f"MID: {active_xg_mult.get('MID', 1.04):.2f}x xG / {active_xa_mult.get('MID', 1.06):.2f}x xA"
+    def_m_str = f"DEF: {active_xg_mult.get('DEF', 0.88):.2f}x xG / {active_xa_mult.get('DEF', 0.92):.2f}x xA"
+    gk_m_str = f"GK: {active_xg_mult.get('GK', 0.00):.2f}x xG / {active_xa_mult.get('GK', 0.50):.2f}x xA"
+
     st.info(
-        "⚖️ **Positional Weighted Multipliers & Normalized Points Formula**: Komponen `xG Pts` dan `xA Pts` kini dikalibrasi menggunakan **multiplier terbobot per posisi** "
-        "(FWD: 1.08x xG / 1.05x xA, MID: 1.04x xG / 1.06x xA, DEF: 0.88x xG / 0.92x xA, GK: 0.00x xG / 0.50x xA) "
-        "untuk merefleksikan tren efisiensi konversi historis *'Goal > xG'* dan menggantikan nilai mentah xG/xA dengan kontribusi poin ternormalisasi: "
-        "`xG Pts = xG Pred * Poin Gol Posisi * Pos_xG_Mult` dan `xA Pts = xA Pred * 3.0 * Pos_xA_Mult`."
+        f"⚖️ **Positional Weighted Multipliers & Normalized Points Formula**: Komponen `xG Pts` dan `xA Pts` dikalibrasi secara otomatis berbasis tren historis "
+        f"({fwd_m_str}, {mid_m_str}, {def_m_str}, {gk_m_str}) "
+        f"untuk merefleksikan tren efisiensi konversi aktual *'Goal > xG'* dan *'Assist > xA'* serta menggantikan nilai mentah xG/xA dengan kontribusi poin ternormalisasi: "
+        f"`xG Pts = xG Pred * Poin Gol Posisi * Pos_xG_Mult` dan `xA Pts = xA Pred * 3.0 * Pos_xA_Mult`."
     )
 
     st.dataframe(
