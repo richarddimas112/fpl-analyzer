@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from datetime import datetime, timezone, timedelta
 
 from src.auth import login_user, register_user, logout_user
 
@@ -378,13 +379,30 @@ def main():
         return
 
     # Broadcast Live Matchday Header
-    current_gw_obj = get_current_gw(fpl_data)
-    gw_num_label = current_gw_obj.get('id', 'Live') if isinstance(current_gw_obj, dict) else current_gw_obj
-    deadline_label = current_gw_obj.get('deadline_time', 'TBD') if isinstance(current_gw_obj, dict) else 'TBD'
-    if deadline_label != 'TBD' and 'T' in str(deadline_label):
-        deadline_fmt = str(deadline_label).replace('T', ' ')[:16] + " UTC"
-    else:
-        deadline_fmt = str(deadline_label)
+    events = fpl_data.get('events', [])
+    current_event = next((ev for ev in events if ev.get('is_current')), None)
+    next_event = next((ev for ev in events if ev.get('is_next')), None)
+
+    active_gw_id = (current_event or next_event or {}).get('id', get_current_gw(fpl_data))
+    target_dl_event = next_event or current_event or {}
+    raw_deadline = target_dl_event.get('deadline_time')
+    dl_gw_id = target_dl_event.get('id', active_gw_id)
+
+    def format_broadcast_deadline(dl_str):
+        if not dl_str or str(dl_str).strip() in ['TBD', '', 'None']:
+            return 'TBD'
+        try:
+            s = str(dl_str).replace('Z', '+00:00')
+            dt = datetime.fromisoformat(s)
+            wib = timezone(timedelta(hours=7))
+            dt_wib = dt.astimezone(wib)
+            bulan = {1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'Mei',6:'Jun',7:'Jul',8:'Agu',9:'Sep',10:'Okt',11:'Nov',12:'Des'}
+            return f"{dt_wib.day} {bulan[dt_wib.month]} {dt_wib.year}, {dt_wib.strftime('%H:%M')} WIB"
+        except Exception:
+            return str(dl_str).replace('T', ' ')[:16] + " UTC"
+
+    deadline_fmt = format_broadcast_deadline(raw_deadline)
+    deadline_text = f"DEADLINE GW {dl_gw_id}: {deadline_fmt}" if dl_gw_id != active_gw_id else f"DEADLINE: {deadline_fmt}"
 
     st.markdown(f"""
     <div class="fpl-broadcast-header">
@@ -395,7 +413,7 @@ def main():
                     FPL SCOUT PRO <span style="font-size: 0.82rem; font-weight: 700; color: #06b6d4; font-family: 'JetBrains Mono', monospace; background: rgba(6,182,212,0.12); padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(6,182,212,0.3);">BROADCAST SUITE</span>
                 </h1>
                 <p class="fpl-brand-subtitle">
-                    MATCHDAY ENGINE &bull; GAMEWEEK {gw_num_label} &bull; DEADLINE: {deadline_fmt}
+                    MATCHDAY ENGINE &bull; GAMEWEEK {active_gw_id} &bull; {deadline_text}
                 </p>
             </div>
         </div>
