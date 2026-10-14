@@ -35,8 +35,7 @@ from src.views.tab_option_c import render_tab_option_c
 from src.views.tab_radar import render_player_comparison_radar_tab
 from src.views.tab_hidden_gem import render_tab_hidden_gem
 from src.views.navigation import (
-    render_navigation_bar, render_sidebar_quick_nav,
-    render_module_footer_pager, NAV_MODULES
+    render_navigation_bar
 )
 
 # Page Configuration
@@ -47,26 +46,26 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom High-End Modern Styling
+# Custom High-End Sports Broadcast Pro Styling (High Contrast Dark Sporty Theme)
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap');
 
 html, body, [class*="css"] {
     font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-    color: #0f172a;
+    color: #f1f5f9;
 }
 
 .main {
-    background-color: #f8fafc;
+    background-color: #0b0f19;
 }
 
 /* Container Spacing & Max Width for Professional Look */
 .block-container {
-    padding-top: 1.25rem !important;
+    padding-top: 1.0rem !important;
     padding-bottom: 3rem !important;
-    padding-left: 2rem !important;
-    padding-right: 2rem !important;
+    padding-left: 1.75rem !important;
+    padding-right: 1.75rem !important;
     max-width: 1440px !important;
 }
 
@@ -75,11 +74,11 @@ header[data-testid="stHeader"] {
     background-color: transparent !important;
 }
 
-/* Typography Hierarchy */
+/* Typography Hierarchy - Sports Broadcast Pro */
 h1, h2, h3, h4, h5, h6 {
     font-family: 'Plus Jakarta Sans', sans-serif !important;
-    letter-spacing: -0.025em !important;
-    color: #0f172a !important;
+    letter-spacing: -0.03em !important;
+    color: #ffffff !important;
 }
 
 h1 { font-weight: 800 !important; }
@@ -87,136 +86,190 @@ h2 { font-weight: 800 !important; }
 h3 { font-weight: 700 !important; }
 h4 { font-weight: 700 !important; }
 
-/* Sidebar Custom Styling */
+/* Sidebar Custom Styling - Dark Broadcast Tone */
 section[data-testid="stSidebar"] {
-    background-color: #ffffff;
-    border-right: 1px solid #e2e8f0;
+    background-color: #0d1322 !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
 }
 
 section[data-testid="stSidebar"] .stMarkdown h1,
 section[data-testid="stSidebar"] .stMarkdown h2,
 section[data-testid="stSidebar"] .stMarkdown h3 {
-    color: #0f172a;
+    color: #ffffff !important;
     font-weight: 700;
 }
 
 /* Sidebar Inputs and Selects */
 div[data-baseweb="select"] > div, div[data-baseweb="input"] > div {
     border-radius: 8px !important;
-    border-color: #cbd5e1 !important;
-    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+    background-color: #161f33 !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+    color: #f8fafc !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3) !important;
     transition: all 0.15s ease-in-out !important;
 }
 
 div[data-baseweb="select"] > div:hover, div[data-baseweb="input"] > div:hover {
-    border-color: #94a3b8 !important;
+    border-color: #06b6d4 !important;
 }
 
-/* Brand Banner Card */
-.fpl-brand-header {
-    background: linear-gradient(135deg, #090d16 0%, #0f172a 50%, #1e1b4b 100%);
-    border-radius: 14px;
-    padding: 22px 30px;
+/* Sports Broadcast Live Matchday Header */
+.fpl-broadcast-header {
+    background: linear-gradient(135deg, #090e1a 0%, #111a2e 50%, #0d233a 100%);
+    border-radius: 12px;
+    padding: 18px 24px;
     color: #ffffff;
-    margin-bottom: 22px;
+    margin-bottom: 16px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    box-shadow: 0 8px 24px -4px rgba(15, 23, 42, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    position: relative;
+    overflow: hidden;
+}
+
+.fpl-broadcast-header::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, #10b981 0%, #06b6d4 50%, #f59e0b 100%);
 }
 
 .fpl-brand-title {
     display: flex;
     align-items: center;
-    gap: 18px;
+    gap: 16px;
 }
 
 .fpl-logo-badge {
-    background: linear-gradient(135deg, #38ef7d 0%, #11998e 100%);
-    width: 50px;
-    height: 50px;
-    border-radius: 12px;
+    background: linear-gradient(135deg, #10b981 0%, #06b6d4 100%);
+    width: 48px;
+    height: 48px;
+    border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 24px;
-    box-shadow: 0 4px 12px rgba(56, 239, 125, 0.35);
+    box-shadow: 0 0 16px rgba(6, 182, 212, 0.4);
 }
 
 .fpl-brand-name {
-    font-size: 1.5rem;
+    font-size: 1.45rem;
     font-weight: 800;
     letter-spacing: -0.025em;
     margin: 0;
     color: #ffffff !important;
+    display: flex;
+    align-items: center;
+    gap: 10px;
 }
 
 .fpl-brand-subtitle {
-    font-size: 0.86rem;
+    font-size: 0.82rem;
     color: #94a3b8;
-    margin-top: 3px;
+    margin-top: 2px;
     margin-bottom: 0;
+    font-family: 'JetBrains Mono', monospace;
 }
 
-.fpl-status-badge {
-    background: rgba(255, 255, 255, 0.07);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+.fpl-live-pulse-badge {
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.35);
     padding: 6px 14px;
-    border-radius: 20px;
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #38ef7d;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #10b981;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.05em;
 }
 
-.fpl-status-dot {
-    width: 8px;
-    height: 8px;
-    background-color: #38ef7d;
-    border-radius: 50%;
-    display: inline-block;
-    box-shadow: 0 0 8px #38ef7d;
+.fpl-live-pulse-badge {
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #10b981;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.05em;
 }
 
-/* Metric Cards Refinement */
+/* Metric Cards Refinement - Broadcast Studio Aesthetic */
 div[data-testid="stMetric"] {
-    background-color: #ffffff;
-    border: 1.5px solid #e2e8f0;
-    border-radius: 12px;
-    padding: 16px 20px;
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03), 0 2px 6px rgba(15, 23, 42, 0.02);
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    background: linear-gradient(180deg, #131b2e 0%, #0f1626 100%) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 10px !important;
+    padding: 14px 18px !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25) !important;
+    transition: transform 0.15s ease, border-color 0.15s ease !important;
 }
 
 div[data-testid="stMetric"]:hover {
-    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
-    border-color: #cbd5e1;
+    border-color: rgba(6, 182, 212, 0.4) !important;
+    transform: translateY(-1px) !important;
 }
 
-div[data-testid="stMetricLabel"] {
-    color: #64748b;
-    font-weight: 700;
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+/* Streamlit/preview builds wrap metric labels differently; cover nested text. */
+[data-testid="stMetric"] p,
+[data-testid="stMetric"] label,
+[data-testid="stMetric"] [data-testid*="Label"],
+[data-testid="stMetric"] [data-testid*="Label"] * {
+    color: #e2e8f0 !important;
+    font-size: 0.88rem !important;
+    font-weight: 650 !important;
+    letter-spacing: 0 !important;
+    opacity: 1 !important;
+}
+
+[data-testid="stMetric"] [data-testid*="Delta"],
+[data-testid="stMetric"] [data-testid*="Delta"] * {
+    color: #86efac !important;
+    opacity: 1 !important;
+}
+
+[data-testid="stMetric"] [data-testid*="Delta"] svg {
+    fill: #86efac !important;
+    color: #86efac !important;
 }
 
 div[data-testid="stMetricValue"] {
-    color: #0f172a;
-    font-weight: 800;
-    font-size: 1.6rem;
-    letter-spacing: -0.025em;
+    color: #ffffff !important;
+    font-weight: 800 !important;
+    font-size: 1.55rem !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    letter-spacing: -0.03em !important;
+}
+
+/* Quick Filter Preset Bar */
+.quick-preset-bar {
+    background: #111827;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 10px 16px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
 }
 
 /* Pearson Correlation Insight Card */
 .corr-card {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-left: 4px solid #2563eb;
-    border-radius: 10px;
+    background: #111a2e;
+    border: 1px solid rgba(6, 182, 212, 0.3);
+    border-radius: 8px;
     padding: 16px 20px;
     margin: 16px 0;
 }
@@ -224,29 +277,30 @@ div[data-testid="stMetricValue"] {
 .corr-title {
     font-size: 0.88rem;
     font-weight: 700;
-    color: #1e293b;
+    color: #e2e8f0;
     margin-bottom: 4px;
 }
 
 .corr-value {
     font-size: 1.45rem;
     font-weight: 800;
-    color: #2563eb;
+    color: #06b6d4;
+    font-family: 'JetBrains Mono', monospace;
 }
 
 .corr-desc {
     font-size: 0.85rem;
-    color: #64748b;
+    color: #94a3b8;
     margin-top: 4px;
 }
 
-/* Tabs Design - Enhanced for Auto-Wrapping and No Horizontal Scroll */
+/* Tabs Design - Auto-wrapping High-Contrast Dark */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 8px;
-    background-color: #f1f5f9;
+    gap: 6px;
+    background-color: #0d1322 !important;
     padding: 6px;
     border-radius: 10px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
     flex-wrap: wrap !important;
     overflow-x: visible !important;
     height: auto !important;
@@ -254,113 +308,102 @@ div[data-testid="stMetricValue"] {
 
 .stTabs [data-baseweb="tab"] {
     height: auto !important;
-    min-height: 38px;
+    min-height: 36px;
     border-radius: 6px;
     font-weight: 600;
-    color: #64748b;
+    color: #94a3b8 !important;
+    background-color: transparent !important;
     border: none !important;
-    background-color: transparent;
-    padding: 8px 16px !important;
-    transition: all 0.2s ease;
-    white-space: normal !important;
+    padding: 6px 14px !important;
+    font-size: 0.85rem !important;
 }
 
-.stTabs [aria-selected="true"] {
-    background-color: #ffffff !important;
-    color: #0f172a !important;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
-}
-
-/* Modern Pills Auto-Wrap & High-Tactile Styling */
-div[data-testid="stPills"] {
-    flex-wrap: wrap !important;
-    gap: 8px !important;
-}
-
-div[data-testid="stPills"] button {
-    border-radius: 20px !important;
-    font-weight: 600 !important;
-    padding: 6px 16px !important;
-    transition: all 0.15s ease-in-out !important;
-}
-
-/* Table Container Styling */
-div[data-testid="stDataFrame"] {
-    border-radius: 10px;
-    border: 1.5px solid #e2e8f0;
-    overflow: hidden;
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
-}
-
-/* Expanders */
-div[data-testid="stExpander"] {
-    border-radius: 10px !important;
-    border: 1.5px solid #e2e8f0 !important;
-    background-color: #ffffff !important;
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.02) !important;
-    margin-bottom: 12px !important;
-}
-
-/* Dialog / Modal Window Styling */
-div[role="dialog"] {
-    border-radius: 16px !important;
-    border: 1.5px solid #cbd5e1 !important;
-    box-shadow: 0 20px 40px -15px rgba(15, 23, 42, 0.3) !important;
-}
-
-/* Buttons */
-.stButton > button {
-    border-radius: 8px;
-    font-weight: 600;
-    border: 1.5px solid #cbd5e1;
-    transition: all 0.15s ease-in-out;
-}
-
-.stButton > button:hover {
-    border-color: #94a3b8;
-    background-color: #f8fafc;
-    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
-}
-
-.stButton > button[kind="primary"] {
-    background-color: #2563eb !important;
-    border-color: #2563eb !important;
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    background-color: #1e293b !important;
     color: #ffffff !important;
-    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.25);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4) !important;
+    border: 1px solid rgba(6, 182, 212, 0.3) !important;
 }
 
-.stButton > button[kind="primary"]:hover {
-    background-color: #1d4ed8 !important;
-    border-color: #1d4ed8 !important;
-    box-shadow: 0 4px 10px rgba(37, 99, 235, 0.35);
+/* Dataframe & Tables styling */
+div[data-testid="stDataFrame"] {
+    border-radius: 10px !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    overflow: hidden !important;
+}
+
+/* Clear keyboard focus and keep controls comfortable on touch screens. */
+button:focus-visible, [role="button"]:focus-visible, input:focus-visible {
+    outline: 2px solid #22d3ee !important;
+    outline-offset: 2px !important;
+}
+div[data-testid="stButton"] button {
+    min-height: 40px;
+    border-radius: 8px;
+    font-weight: 650;
+    transition: border-color .15s ease, background-color .15s ease, transform .15s ease;
+}
+div[data-testid="stButton"] button:hover {
+    border-color: rgba(34, 211, 238, .55);
+    transform: translateY(-1px);
+}
+
+@media (max-width: 768px) {
+    .block-container {
+        padding: .75rem 1rem 2rem !important;
+    }
+    .fpl-broadcast-header {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 14px;
+        padding: 16px;
+    }
+    .fpl-brand-title { gap: 11px; }
+    .fpl-logo-badge { width: 40px; height: 40px; font-size: 20px; flex: 0 0 auto; }
+    .fpl-brand-name { font-size: 1.12rem; flex-wrap: wrap; gap: 6px; }
+    .fpl-brand-subtitle { font-size: .7rem; line-height: 1.5; }
+    .fpl-live-pulse-badge { font-size: .68rem; padding: 5px 9px; }
+    div[data-testid="stRadio"] [role="radiogroup"] { flex-wrap: wrap; }
 }
 </style>
 """, unsafe_allow_html=True)
 
 def main():
-    # Brand Top Banner
-    st.markdown("""
-    <div class="fpl-brand-header">
-        <div class="fpl-brand-title">
-            <div class="fpl-logo-badge">⚽</div>
-            <div>
-                <h1 class="fpl-brand-name">FPL Scout Analytics & xPoin Predictor</h1>
-                <p class="fpl-brand-subtitle">Platform Analisis Data Resmi Premier League & Model Prediksi Performa Pemain</p>
-            </div>
-        </div>
-        <div class="fpl-status-badge">
-            <span class="fpl-status-dot"></span> Live API Active
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Fetch FPL raw data
+    # Fetch FPL raw data early for dynamic matchday ticker
     fpl_data = fetch_fpl_data()
     fixtures_data = fetch_fixtures_data()
     
     if not fpl_data:
         st.error("Data FPL tidak tersedia. Silakan muat ulang halaman.")
         return
+
+    # Broadcast Live Matchday Header
+    current_gw_obj = get_current_gw(fpl_data)
+    gw_num_label = current_gw_obj.get('id', 'Live') if isinstance(current_gw_obj, dict) else current_gw_obj
+    deadline_label = current_gw_obj.get('deadline_time', 'TBD') if isinstance(current_gw_obj, dict) else 'TBD'
+    if deadline_label != 'TBD' and 'T' in str(deadline_label):
+        deadline_fmt = str(deadline_label).replace('T', ' ')[:16] + " UTC"
+    else:
+        deadline_fmt = str(deadline_label)
+
+    st.markdown(f"""
+    <div class="fpl-broadcast-header">
+        <div class="fpl-brand-title">
+            <div class="fpl-logo-badge">⚡</div>
+            <div>
+                <h1 class="fpl-brand-name">
+                    FPL SCOUT PRO <span style="font-size: 0.82rem; font-weight: 700; color: #06b6d4; font-family: 'JetBrains Mono', monospace; background: rgba(6,182,212,0.12); padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(6,182,212,0.3);">BROADCAST SUITE</span>
+                </h1>
+                <p class="fpl-brand-subtitle">
+                    MATCHDAY ENGINE &bull; GAMEWEEK {gw_num_label} &bull; DEADLINE: {deadline_fmt}
+                </p>
+            </div>
+        </div>
+        <div class="fpl-live-pulse-badge">
+            MATCHDAY LIVE &bull; OFFICIAL FPL FEED
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     teams_dict = {t['id']: t['name'] for t in fpl_data.get('teams', [])}
     teams_short_dict = {t['id']: t.get('short_name', t['name'][:3].upper()) for t in fpl_data.get('teams', [])}
@@ -431,10 +474,6 @@ def main():
     # -------------------------------------------------------------------------
     # SIDEBAR QUICK NAVIGATION & FILTERS
     # -------------------------------------------------------------------------
-    render_sidebar_quick_nav()
-    
-    
-
     st.sidebar.header("🔍 Filter Pemain FPL")
 
     # Search Bar
@@ -547,17 +586,9 @@ def main():
         elif mod_id == "fixtures":
             render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=fpl_data, df_teams=df_teams, players_df=players_df)
 
-    # Modern Navigation Hub (Eliminates horizontal scrolling, supports Category pills, Wrap Grid, and Classical Auto-wrap tabs)
+    # Categorized navigation keeps module selection predictable and compact.
     active_nav_id = render_navigation_bar()
-
-    if active_nav_id == "USE_ST_TABS":
-        st_tab_list = st.tabs([m["title"] for m in NAV_MODULES])
-        for idx, m in enumerate(NAV_MODULES):
-            with st_tab_list[idx]:
-                render_content_by_id(m["id"])
-    else:
-        render_content_by_id(active_nav_id)
-        render_module_footer_pager()
+    render_content_by_id(active_nav_id)
 
 if __name__ == "__main__":
     main()
