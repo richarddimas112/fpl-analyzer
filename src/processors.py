@@ -9,7 +9,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from scipy.stats import poisson
 
-from src.constants import POSITION_MAP, STATUS_MAP
+from src.constants import POSITION_MAP, STATUS_MAP, POSITION_XG_MULTIPLIER, POSITION_XA_MULTIPLIER
 from src.api import fetch_player_history_raw
 
 def bivariate_dixon_coles_cs_prob(lambda_team, lambda_opp, rho=-0.06):
@@ -799,13 +799,21 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         np.where(avg_mins_l5m > 0.0, 1.0 * chance_factor, 0.0)
     ).round(2)
 
-    # b. xG_Pts (GK=10, DEF=6, MID=5, FWD=4)
+    # b. xG_Pts & xA_Pts with Normalized Points Contribution Formula:
+    # Menggunakan weighted multiplier per posisi (FWD/MID vs DEF/GK) yang merefleksikan tren historis 'Goal > xG' (conversion efficiency):
+    # FWD (1.08x), MID (1.04x) memiliki finishing conversion lebih tajam, sedangkan DEF (0.88x) dari set-piece sulit dikonversi.
+    # Formula Kontribusi Poin Ternormalisasi:
+    # xG Pts = xG Pred (Match) * Poin Gol Posisi * Pos_xG_Multiplier
+    # xA Pts = xA Pred (Match) * 3.0 * Pos_xA_Multiplier
     poin_gol_map = {'GK': 10.0, 'DEF': 6.0, 'MID': 5.0, 'FWD': 4.0}
     poin_gol = df['Posisi'].map(poin_gol_map).fillna(4.0)
-    df['xG Pts'] = (df['xG Pred (Match)'] * poin_gol).round(2)
+    pos_xg_mult = df['Posisi'].map(POSITION_XG_MULTIPLIER).fillna(1.0)
+    pos_xa_mult = df['Posisi'].map(POSITION_XA_MULTIPLIER).fillna(1.0)
 
-    # c. xA_Pts (All = 3)
-    df['xA Pts'] = (df['xA Pred (Match)'] * 3.0).round(2)
+    df['xG Mult'] = pos_xg_mult.round(2)
+    df['xA Mult'] = pos_xa_mult.round(2)
+    df['xG Pts'] = (df['xG Pred (Match)'] * poin_gol * pos_xg_mult).round(2)
+    df['xA Pts'] = (df['xA Pred (Match)'] * 3.0 * pos_xa_mult).round(2)
 
     # d. xSaves_Pts (GK only: expected saves / 3.0)
     exp_saves = df['Saves per 90'] * mins_ratio
@@ -865,6 +873,7 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         'id', 'team',
         'Nama Pemain', 'Klub', 'Lawan GW Berikutnya', 'Posisi', 'Harga (£m)', 'xPoin', 'xPoin (Option B)',
         'Diff Attack Team', 'Diff Defense Team', 'Peluang CS (%)',
+        'xG Mult', 'xA Mult',
         'xG Pred (Match)', 'xA Pred (Match)', 'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
         'Avg Mins (L5M)', 'Total Poin', 'FDR1', 'FDR3', 'FDR5', 'FDR10', 'Form', '% Ownership', 'Net Transfers GW',
         'Transfers In GW', 'Transfers Out GW',
@@ -992,11 +1001,21 @@ def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_
             (df['xA Pred (Match)'] * att_diff_factor).round(2)
         )
 
-    # 2. xG Pts dan xA Pts
+    # 2. xG Pts dan xA Pts with Normalized Points Contribution Formula:
+    # Menggunakan weighted multiplier per posisi (FWD/MID vs DEF/GK) yang merefleksikan tren historis 'Goal > xG' (conversion efficiency):
+    # FWD (1.08x), MID (1.04x) memiliki finishing conversion lebih tajam, sedangkan DEF (0.88x) dari set-piece sulit dikonversi.
+    # Formula Kontribusi Poin Ternormalisasi:
+    # xG Pts = xG Pred (Match) * Poin Gol Posisi * Pos_xG_Multiplier
+    # xA Pts = xA Pred (Match) * 3.0 * Pos_xA_Multiplier
     poin_gol_map = {'GK': 10.0, 'DEF': 6.0, 'MID': 5.0, 'FWD': 4.0}
     poin_gol = df['Posisi'].map(poin_gol_map).fillna(4.0)
-    df['xG Pts'] = (df['xG Pred (Match)'] * poin_gol).round(2)
-    df['xA Pts'] = (df['xA Pred (Match)'] * 3.0).round(2)
+    pos_xg_mult = df['Posisi'].map(POSITION_XG_MULTIPLIER).fillna(1.0)
+    pos_xa_mult = df['Posisi'].map(POSITION_XA_MULTIPLIER).fillna(1.0)
+
+    df['xG Mult'] = pos_xg_mult.round(2)
+    df['xA Mult'] = pos_xa_mult.round(2)
+    df['xG Pts'] = (df['xG Pred (Match)'] * poin_gol * pos_xg_mult).round(2)
+    df['xA Pts'] = (df['xA Pred (Match)'] * 3.0 * pos_xa_mult).round(2)
 
     # 3. xDC Pts (Defensive Contribution Points)
     # Jika Diff Defense negatif (serangan lawan sangat kuat), aksi defensif pemain (tackle, blok, clearance) meningkat
