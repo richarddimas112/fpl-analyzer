@@ -15,12 +15,8 @@ from src.api import (
 )
 from src.processors import (
     get_current_gw, load_historical_training_data, format_setpiece_order,
-    calculate_team_fdrs, calculate_team_strength_analysis,
-    compute_all_l5m_avg_mins, process_players, apply_team_differentials_and_recalc_option_b
-)
-from src.firebase_client import (
-    fetch_gw_differentials_from_firestore, compute_differentials_for_gw,
-    is_gw4_finished, sync_historical_gw1_to_gw4, auto_sync_next_gw_differentials
+    calculate_team_fdrs, calculate_team_strength_analysis, compute_team_differentials_asof,
+    process_players, apply_team_differentials_and_recalc_option_b
 )
 from src.models import (
     perform_classical_assumption_tests, check_setpiece_taker,
@@ -448,47 +444,44 @@ def main():
         return
 
     # Calculate comprehensive team strength analysis once for shared use
-    df_teams = calculate_team_strength_analysis(fpl_data, players_df, fdr_summary)
+    df_teams = calculate_team_strength_analysis(fpl_data, players_df, fdr_summary, fixtures_data)
 
-    # Train Option B Match xG & xA Models (Option B) using calculated team strengths and matchday FDR
+    # Train Option B xG models by position and one pooled xA/90 model with position as a feature.
     opt_b_model_xg, opt_b_model_xa, stats_xg, stats_xa = train_option_b_models(
         fpl_data.get('elements', []), fdr_summary, current_gw, df_historical, _df_teams=df_teams, fixtures_data=fixtures_data
     )
 
     # -------------------------------------------------------------------------
-    # GAMEWEEK DIFFERENTIAL & FIREBASE FIRESTORE SYNC
+    # GAMEWEEK DIFFERENTIAL FROM COMPLETED MATCH HISTORY
     # -------------------------------------------------------------------------
     current_gw_num = int(current_gw.get('id', 4) if isinstance(current_gw, dict) else current_gw)
     
-    # We want Option B models (player table) to predict for the *next upcoming unplayed match*
-    # So we use current_gw_num + 1 if current_gw_num is partially active, but FPL usually marks the 'next' GW
-    # To align with Tab Fixtures (which looks ahead), we should compute differentials for the next GW the player will play.
-    # We'll use the 'Next_Is_Home' opponent data already in players_df, so we just compute diffs for the 'next' match directly.
-    
-    # We'll compute the differential on the fly based on the opponent they face next (which is in their 'Opponent_xGC_per_90' etc)
-    # The 'compute_differentials_for_gw' is specific to a GW, but players might have blank/double GWs.
-    # However, to fix the immediate issue of Option B showing GW4 diffs instead of GW5, we can fetch GW5 diffs if we know it's next.
-    
-    is_current = current_gw.get('is_current', True) if isinstance(current_gw, dict) else True
-    next_gw_num = current_gw_num + 1 if is_current else current_gw_num
-    
-    fs_gw_data = fetch_gw_differentials_from_firestore(next_gw_num)
-    if fs_gw_data and fs_gw_data.get('team_differentials'):
-        team_diffs_predict = fs_gw_data['team_differentials']
-    else:
-        team_diffs_predict, _ = compute_differentials_for_gw(next_gw_num, fixtures_data, df_teams, teams_dict)
+    # Gunakan snapshot yang dihitung dari pertandingan selesai sebelum GW target.
+    # Dokumen Firebase lama dapat berisi skor tim terkini yang dihitung ulang secara retrospektif.
+    target_gw_by_team = {
+        int(team_id): int(info['upcoming_all'][0]['gw'])
+        for team_id, info in fdr_summary.items()
+        if info.get('upcoming_all') and info['upcoming_all'][0].get('gw') is not None
+    }
+    historical_diffs = compute_team_differentials_asof(
+        fpl_data.get('elements', []), fixtures_data,
+        target_gws=sorted({int(f['event']) for f in fixtures_data if f.get('event') is not None})
+    )
+    team_diffs_predict = {}
+    for team_id, target_gw in target_gw_by_team.items():
+        info = historical_diffs.get((target_gw, team_id))
+        if info:
+            team_name = teams_dict.get(team_id, f"Team {team_id}")
+            opponent_name = teams_dict.get(info['opponent_id'], f"Team {info['opponent_id']}")
+            team_diff = {**info, 'opponent': opponent_name}
+            team_diffs_predict[team_name] = team_diff
+            team_diffs_predict[team_id] = team_diff
 
     # Enrich players_df with Diff Attack Team & Diff Defense Team and calibrate Option B for the NEXT match
     players_df = apply_team_differentials_and_recalc_option_b(
         players_df, team_diffs_predict, _opt_b_models=(opt_b_model_xg, opt_b_model_xa)
     )
     
-    # Auto-sync next GW if current GW is finished (robust check for current and previous)
-    if current_gw_num > 1:
-        auto_sync_next_gw_differentials(current_gw_num - 1, fixtures_data, df_teams, teams_dict)
-    auto_sync_next_gw_differentials(current_gw_num, fixtures_data, df_teams, teams_dict)
-    # We can silently ignore if not finished or already saved, to avoid spamming the user
-
     # -------------------------------------------------------------------------
     # SIDEBAR QUICK NAVIGATION & FILTERS
     # -------------------------------------------------------------------------
