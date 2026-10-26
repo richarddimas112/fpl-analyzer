@@ -1,6 +1,15 @@
-[theme]
-base="light"
-primaryColor="#0f5499"
-backgroundColor="#ffffff"
-secondaryBackgroundColor="#f8f9fa"
-textColor="#1f2937"
+[server]
+port = 3000
+address = "0.0.0.0"
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+fileWatcherType = "none"
+enableWebsocketCompression = false
+websocketPingInterval = 20
+disconnectedSessionTTL = 3600
+allowedHosts = ["*"]
+corsAllowedOrigins = ["*"]
+
+[browser]
+gatherUsageStats = false
