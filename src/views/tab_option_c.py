@@ -1,6 +1,6 @@
 """
 Option C: Current Season Machine Learning Model Tab View.
-Enriched with Positional Dedicated Models (FWD, MID, DEF, GK) and Purged Walk-Forward Time-Series Cross Validation.
+Enriched with positional models (FWD, MID, DEF, GK) and Walk-Forward Time-Series Cross Validation.
 """
 
 import pandas as pd
@@ -10,13 +10,13 @@ from src.models import build_option_c_model_and_view
 def render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=None, price_range=None, df_option_c=None, fixtures_data=None):
     """
     Renders Tab 6: Current Season Machine Learning Models (Ridge, Linear Regression, Gradient Boosting).
-    Now features dedicated positional models and Purged Walk-Forward Time-Series Cross Validation.
+    Shows positional model predictions and Walk-Forward evaluation metrics.
     """
-    st.subheader("🔮 Option C: Machine Learning Musim Berjalan (Model Posisi & Purged Walk-Forward CV)")
+    st.subheader("🔮 Option C: Machine Learning Musim Berjalan (Model Posisi & Walk-Forward CV)")
     st.write(
         "Model prediksi prediktif xPoin yang dilatih **terpisah per posisi (FWD, MID, DEF, GK)** menggunakan histori "
-        "pertandingan murni musim berjalan. Evaluasi performa divalidasi secara ketat menggunakan **Purged Walk-Forward Time-Series Cross Validation** "
-        "(pengujian *out-of-sample* maju secara kronologis tanpa *lookahead data leakage*)."
+        "pertandingan murni musim berjalan. Validasi **Walk-Forward Time-Series** ditampilkan bila jumlah gameweek dan sampel mencukupi; "
+        "jika belum, metrik out-of-sample tidak ditampilkan sebagai hasil validasi."
     )
 
     if df_option_c is not None and not df_option_c.empty:
@@ -42,15 +42,25 @@ def render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=None
                 n_samples = pos_info.get('n_samples', 0)
                 n_folds = pos_info.get('folds_evaluated', 0)
                 has_wf = pos_info.get('has_walk_forward_cv', False)
+                used_global_fallback = pos_info.get('used_global_position_fallback', False)
 
-                # Status Banner
-                st.markdown(
-                    f"<div style='background: #f0fdf4; border-left: 4px solid #16a34a; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;'>"
-                    f"<strong style='color: #166534;'>🏆 Evaluasi Model Posisi: {pos_key} ({n_samples} Baris Laga)</strong><br>"
-                    f"<span style='color: #15803d; font-size: 0.88rem;'>Metode Validasi: <strong>Purged Walk-Forward Time-Series CV</strong> ({n_folds} Fold Temporal Gameweek) • Generalisasi Out-of-Sample Murni Bebas Data Leakage</span>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
+                # Do not label in-sample metrics as out-of-sample when no temporal folds exist.
+                if has_wf:
+                    st.markdown(
+                        f"<div style='background: #f0fdf4; border-left: 4px solid #16a34a; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;'>"
+                        f"<strong style='color: #166534;'>Evaluasi Model {pos_key} ({n_samples} baris laga)</strong><br>"
+                        f"<span style='color: #15803d; font-size: 0.88rem;'>Walk-Forward Time-Series CV: {n_folds} fold gameweek, dievaluasi out-of-sample secara kronologis. "
+                        f"{'Data gabungan lintas posisi dipakai karena sampel posisi ini sedikit.' if used_global_fallback else 'Model memakai data posisi ini.'}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.warning(
+                        f"Data belum cukup untuk validasi out-of-sample pada {pos_key}. "
+                        "Metrik CV disembunyikan; metrik in-sample di bawah hanya diagnostik dan bukan bukti kemampuan prediksi."
+                    )
+                    if used_global_fallback:
+                        st.caption("Prediksi posisi ini memakai fallback data gabungan lintas posisi karena sampel historis khusus posisi belum cukup.")
 
                 # 4 Columns of Metrics (LR, Ridge, GBR, Ensemble)
                 col_lr, col_rd, col_gb, col_ens = st.columns(4)
@@ -63,9 +73,9 @@ def render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=None
                         <strong style="color: #1e40af; font-size: 0.95rem;">1. Multiple Linear Reg</strong>
                     </div>
                     """, unsafe_allow_html=True)
-                    st.metric("CV MAE (Out-of-Sample)", f"{lr_m.get('mae', 0):.4f}", f"In-Sample: {lr_in.get('mae', 0):.3f}")
-                    st.metric("CV RMSE", f"{lr_m.get('rmse', 0):.4f}")
-                    st.metric("CV R² Score", f"{lr_m.get('r2', 0):.4f}")
+                    st.metric("CV MAE (Out-of-Sample)", f"{lr_m['mae']:.4f}" if has_wf and 'mae' in lr_m else "—", f"In-Sample: {lr_in.get('mae', 0):.3f}")
+                    st.metric("CV RMSE", f"{lr_m['rmse']:.4f}" if has_wf and 'rmse' in lr_m else "—")
+                    st.metric("CV R² Score", f"{lr_m['r2']:.4f}" if has_wf and 'r2' in lr_m else "—")
 
                 with col_rd:
                     rd_m = cv_mets.get('Ridge Regression', {})
@@ -75,9 +85,9 @@ def render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=None
                         <strong style="color: #065f46; font-size: 0.95rem;">2. Ridge Reg (L2)</strong>
                     </div>
                     """, unsafe_allow_html=True)
-                    st.metric("CV MAE (Out-of-Sample)", f"{rd_m.get('mae', 0):.4f}", f"In-Sample: {rd_in.get('mae', 0):.3f}")
-                    st.metric("CV RMSE", f"{rd_m.get('rmse', 0):.4f}")
-                    st.metric("CV R² Score", f"{rd_m.get('r2', 0):.4f}")
+                    st.metric("CV MAE (Out-of-Sample)", f"{rd_m['mae']:.4f}" if has_wf and 'mae' in rd_m else "—", f"In-Sample: {rd_in.get('mae', 0):.3f}")
+                    st.metric("CV RMSE", f"{rd_m['rmse']:.4f}" if has_wf and 'rmse' in rd_m else "—")
+                    st.metric("CV R² Score", f"{rd_m['r2']:.4f}" if has_wf and 'r2' in rd_m else "—")
 
                 with col_gb:
                     gb_m = cv_mets.get('Gradient Boosting', {})
@@ -87,9 +97,9 @@ def render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=None
                         <strong style="color: #5b21b6; font-size: 0.95rem;">3. Gradient Boosting</strong>
                     </div>
                     """, unsafe_allow_html=True)
-                    st.metric("CV MAE (Out-of-Sample)", f"{gb_m.get('mae', 0):.4f}", f"In-Sample: {gb_in.get('mae', 0):.3f}")
-                    st.metric("CV RMSE", f"{gb_m.get('rmse', 0):.4f}")
-                    st.metric("CV R² Score", f"{gb_m.get('r2', 0):.4f}")
+                    st.metric("CV MAE (Out-of-Sample)", f"{gb_m['mae']:.4f}" if has_wf and 'mae' in gb_m else "—", f"In-Sample: {gb_in.get('mae', 0):.3f}")
+                    st.metric("CV RMSE", f"{gb_m['rmse']:.4f}" if has_wf and 'rmse' in gb_m else "—")
+                    st.metric("CV R² Score", f"{gb_m['r2']:.4f}" if has_wf and 'r2' in gb_m else "—")
 
                 with col_ens:
                     ens_m = cv_mets.get('Ensemble', {})
@@ -99,17 +109,17 @@ def render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=None
                         <strong style="color: #854d0e; font-size: 0.95rem;">⭐ Ensemble Option C</strong>
                     </div>
                     """, unsafe_allow_html=True)
-                    st.metric("CV MAE (Out-of-Sample)", f"{ens_m.get('mae', 0):.4f}", f"In-Sample: {ens_in.get('mae', 0):.3f}")
-                    st.metric("CV RMSE", f"{ens_m.get('rmse', 0):.4f}")
-                    st.metric("CV R² Score", f"{ens_m.get('r2', 0):.4f}")
+                    st.metric("CV MAE (Out-of-Sample)", f"{ens_m['mae']:.4f}" if has_wf and 'mae' in ens_m else "—", f"In-Sample: {ens_in.get('mae', 0):.3f}")
+                    st.metric("CV RMSE", f"{ens_m['rmse']:.4f}" if has_wf and 'rmse' in ens_m else "—")
+                    st.metric("CV R² Score", f"{ens_m['r2']:.4f}" if has_wf and 'r2' in ens_m else "—")
 
                 # Expander for Walk-Forward Fold Details
                 fold_details = pos_info.get('fold_details', [])
                 if fold_details:
-                    with st.expander(f"📅 Rincian Hasil Purged Walk-Forward Fold per Gameweek ({pos_key})", expanded=False):
+                    with st.expander(f"📅 Rincian Hasil Walk-Forward Fold per Gameweek ({pos_key})", expanded=False):
                         df_folds = pd.DataFrame(fold_details)
                         st.dataframe(df_folds, use_container_width=True)
-                        st.caption("💡 *Setiap fold menguji model hanya pada gameweek berikutnya secara murni ke depan (Walk-Forward), mencegah bias masa depan.*")
+                        st.caption("💡 *Setiap fold melatih data hingga satu gameweek, lalu menguji pada gameweek berikutnya yang memiliki sampel.*")
 
                 # Expander for Feature Importance / Weights
                 with st.expander(f"🔍 Interpretasi Bobot Fitur Posisi {pos_key} (Feature Importance & Koefisien)", expanded=False):
@@ -264,12 +274,10 @@ def render_tab_option_c(fpl_data, fdr_summary, current_gw, filtered_players=None
                         </div>
                     </div>
                     
-                    <div style="font-size: 0.76rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace;">
-                        🤖 Komparasi Multi-Model ML &amp; Tren Musim Berjalan
-                    </div>
                 </div>
                 """, unsafe_allow_html=True)
 
+                st.caption("🤖 Komparasi Multi-Model ML & Tren Musim Berjalan")
                 cm1, cm2, cm3, cm4, cm5 = st.columns(5)
                 with cm1:
                     st.metric("Gradient Boosting", f"{p_c.get('xPoin (Gradient Boosting)', 0.0):.2f} pts")
