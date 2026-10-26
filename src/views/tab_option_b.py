@@ -6,18 +6,12 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-from src.processors import compute_automatic_position_multipliers
-from src.firebase_client import (
-    load_firebase_config,
-    fetch_gw_differentials_from_firestore,
-    is_gw4_finished,
-    sync_historical_gw1_to_gw4
-)
+from src.processors import compute_automatic_position_multipliers, compute_automatic_player_xg_multipliers
 
 def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fixtures=None, teams_dict=None, current_gw=4):
     """
     Renders Tab 5: Option B Component Model Breakdown and Diagnostics.
-    Now enriched with 'Diff Attack Team' and 'Diff Defense Team' from Firebase Firestore.
+    Team differentials are reconstructed from completed match history as of each target GW.
     """
     st.subheader("🧮 Option B: Bottom-Up Component Model xPoin")
     st.write(
@@ -27,53 +21,17 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
     )
 
     # -------------------------------------------------------------------------
-    # FIREBASE FIRESTORE SYNC & STATUS EXPANDER
+    # AS-OF TEAM STRENGTH METHOD
     # -------------------------------------------------------------------------
-    with st.expander("☁️ Status Database Firebase & Sinkronisasi Variabel Differential (GW1 – GW4)", expanded=False):
-        fb_cfg = load_firebase_config()
-        c_status1, c_status2, c_status3 = st.columns([1.5, 1.5, 1.2])
-        
-        with c_status1:
-            if fb_cfg:
-                st.success(f"🟢 **Firestore Terhubung**: `{fb_cfg.get('projectId', 'GCP')}`")
-                st.caption(f"Database ID: `{fb_cfg.get('firestoreDatabaseId', '(default)')}` (Mode Free Tier Hemat Kuota)")
-            else:
-                st.warning("⚠️ Konfigurasi Firebase belum terdeteksi.")
-                
-        with c_status2:
-            if fixtures:
-                gw4_fin, gw4_msg = is_gw4_finished(fixtures)
-                if gw4_fin:
-                    st.success(f"🏁 **Status GW4**: {gw4_msg}")
-                else:
-                    st.info(f"⏳ **Status GW4**: {gw4_msg}")
-            else:
-                st.write("Status fixture belum dimuat.")
-                
-        with c_status3:
-            if st.button("⚡ Sinkronisasi Sekarang ke Firebase", help="Simpan kalkulasi differential GW1-GW4 ke Firestore"):
-                if fixtures is not None and df_teams is not None and teams_dict is not None:
-                    with st.spinner("Menyimpan kalkulasi ke Firestore..."):
-                        ok, msg = sync_historical_gw1_to_gw4(fixtures, df_teams, teams_dict, force=True)
-                        if ok:
-                            st.success(msg)
-                        else:
-                            st.error(msg)
-                else:
-                    st.warning("Data fixture dan tim sedang dipersiapkan, silakan coba beberapa saat lagi.")
-
+    with st.expander("ℹ️ Cara menghitung differential tim pra-GW", expanded=False):
         st.markdown(
             """
-            **Bagaimana Variabel Differential Bekerja di Option B:**
-            1. **`Diff Attack Team` (Home/Away)**: Selisih Skor Serangan tim terhadap Skor Pertahanan lawan.
-               - Jika positif: Tim unggul ofensif $\\rightarrow$ meningkatkan **xG Pred (Match)** dan **xA Pred (Match)**.
-               - *Contoh GW4*: **Brentford** (+26.2) memiliki ekspektasi serang tinggi vs Bournemouth; sebaliknya **Bournemouth** (-9.4).
-            2. **`Diff Defense Team` (Home/Away)**: Selisih Skor Pertahanan tim terhadap Skor Serangan lawan.
-               - Jika positif: Pertahanan tim lebih rapat dari gempuran lawan $\\rightarrow$ memperbesar peluang **xCS Pts**.
-               - Jika negatif: Pertahanan tim berada di bawah tekanan $\\rightarrow$ intensitas duel dan aksi bertahan naik (**xDC Pts** naik).
-            3. **Keamanan & Efisiensi Firestore**:
-               - Menggunakan caching memory Streamlit (1 jam) sehingga read dibatasi maksimal 1 kali per jam.
-               - Query dan update hanya menyentuh dokumen ringkasan per Gameweek (`gw_1` s/d `gw_38`), 100% aman dalam kuota gratis (Free Tier).
+            **Skor pra-GW** dibangun dari laga yang sudah selesai sebelum Gameweek target. Differential serang =
+            Skor Serangan tim − Skor Pertahanan lawan; differential bertahan = Skor Pertahanan tim − Skor Serangan lawan.
+            Kedua model regresi memakai differential serang yang sama pada data latih walk-forward dan prediksi mendatang.
+
+            Snapshot Firebase lama tidak digunakan untuk model karena sinkronisasi sebelumnya menghitung ulang GW lampau
+            memakai skor tim terkini. Rekonstruksi lama juga terbatas pada riwayat pemain yang masih tersedia di feed FPL.
             """
         )
 
@@ -94,15 +52,13 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
     with st.expander("🤖 Detail Model Regresi xG & xA (Match-Level Prediction)", expanded=False):
         m_tab1, m_tab2 = st.tabs(["⚽ xG Prediction", "🎯 xA Prediction"])
         with m_tab1:
-            st.markdown("#### 📐 Model Prediksi xG (Regresi Linier)")
+            st.markdown("#### 📐 Model Prediksi xG/90 (Ridge Regression)")
             st.info(
-                "**Variabel Fitur Model xG:**\n"
-                "1. `Opponent_xGC_per_90`: Ekspektasi kebobolan lawan per 90 menit\n"
-                "2. `was_home`: Status laga kandang (1 = Home, 0 = Away)\n"
-                "3. `form`: Tren performa pemain FPL\n"
-                "4. `thread_per_90`: Ancaman gol (threat) per 90 menit\n"
-                "5. `FDR`: Fixture Difficulty Rating lawan\n"
-                "6. `Diff Attack Team`: Differential Serang Tim vs Pertahanan Lawan (Home/Away)"
+                "Target model adalah xG/90 aktual pada laga target (laga dengan menit bermain minimal 30). Fitur pra-laga: "
+                "rata-rata poin dan menit bermain lima laga terakhir, status starter pada penampilan sebelumnya, "
+                "Threat/90 lima laga terakhir yang dirapatkan ke rata-rata posisi, selisih kekuatan serang tim vs pertahanan lawan, "
+                "kandang/tandang, dan skor tim-lawan paling mungkin dari model skor. Model dilatih terpisah untuk FWD, MID, dan DEF.\n\n"
+                "Untuk mengubahnya menjadi xG pertandingan, Option B mengalikan prediksi xG/90 dengan rata-rata menit L5M ÷ 90."
             )
             pos_sel_xg = st.selectbox("Pilih Posisi (xG):", ["FWD", "MID", "DEF"], key="optb_pos_xg_sel")
             p_stats_xg = stats_xg.get(pos_sel_xg, stats_xg)
@@ -116,14 +72,23 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
             )
 
             mc1, mc2, mc3, mc4 = st.columns(4)
+            r2_val_xg = p_stats_xg.get('r2')
+            mae_val_xg = p_stats_xg.get('mae')
+            int_val_xg = p_stats_xg.get('intercept')
             with mc1:
-                st.metric("R² Score (Akurasi Fitting)", f"{p_stats_xg.get('r2', 0.0):.4f}")
+                st.metric("R² Score (Out-of-Sample Walk-Forward)", f"{r2_val_xg:.4f}" if r2_val_xg is not None else "Belum Tersedia")
             with mc2:
-                st.metric("Mean Absolute Error (MAE)", f"{p_stats_xg.get('mae', 0.0):.4f}")
+                st.metric("Mean Absolute Error (MAE)", f"{mae_val_xg:.4f}" if mae_val_xg is not None else "Belum Tersedia")
             with mc3:
-                st.metric("Intercept (Konstanta β₀)", f"{p_stats_xg.get('intercept', 0.0):.4f}")
+                st.metric("Intercept (Konstanta β₀)", f"{int_val_xg:.4f}" if int_val_xg is not None else "N/A")
             with mc4:
                 st.metric("Variabel Terpenting", f"{top_var_xg}", f"{top_pct_xg:.1f}%")
+            st.caption(
+                f"Data latih empiris: {p_stats_xg.get('training_rows', 0)} baris · "
+                f"riwayat pertandingan: {p_stats_xg.get('match_history_rows', 0)} baris · "
+                f"dievaluasi out-of-sample: {p_stats_xg.get('evaluated_rows', 0)} baris · "
+                f"data eksternal dengan schema cocok: {p_stats_xg.get('historical_rows_used', 0)} baris."
+            )
 
             st.markdown("##### 📊 Peringkat Kontribusi Variabel Fitur (Feature Importance)")
             st.dataframe(
@@ -140,41 +105,51 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
                 }
             )
             st.caption("💡 *Catatan: 'Beta Standar' menstandarkan skala unit masing-masing fitur sehingga kontribusi tiap variabel dapat diperbandingkan secara adil dan objektif.*")
-            st.markdown("##### 🔍 Top 10 Komparasi Data Training (Aktual vs Prediksi)")
+            st.markdown("##### 🔍 Top 10 Komparasi Evaluasi Out-of-Sample (Aktual vs Prediksi Walk-Forward)")
             st.dataframe(p_stats_xg.get('eval_df', pd.DataFrame()), use_container_width=True)
 
         with m_tab2:
-            st.markdown("#### 📐 Model Prediksi xA (Regresi Linier)")
+            st.markdown("#### 📐 Model Prediksi xA/90 (Regresi Linier Pooled)")
             st.info(
-                "**Variabel Fitur Model xA:**\n"
-                "1. `Opponent_xGC_per_90`: Ekspektasi kebobolan lawan per 90 menit\n"
-                "2. `was_home`: Status laga kandang (1 = Home, 0 = Away)\n"
-                "3. `is_setpiece_taker`: Eksekutor bola mati (corner / freekick)\n"
-                "4. `form`: Tren performa pemain FPL\n"
-                "5. `creativity_per_90`: Kreativitas peluang per 90 menit\n"
-                "6. `FDR`: Fixture Difficulty Rating lawan\n"
-                "7. `Diff Attack Team`: Differential Serang Tim vs Pertahanan Lawan (Home/Away)"
+                "**Model gabungan untuk FWD, MID, dan DEF. Posisi dimasukkan sebagai fitur kategori. Target training adalah xA/90 dari penampilan minimal 30 menit.**\n\n"
+                "**Variabel fitur:**\n"
+                "1. `was_home`: Status kandang/tandang laga target\n"
+                "2. `form`: Rata-rata poin dari maksimal 5 laga sebelum Gameweek target\n"
+                "3. `creativity_per_90`: Creativity per 90 menit dari maksimal 5 laga sebelum target\n"
+                "4. `FDR`: Fixture Difficulty Rating pertandingan target\n"
+                "5. `Diff Attack Team`: Skor serang tim dikurangi skor bertahan lawan, dihitung sebelum GW target\n"
+                "6. `position`: Kategori FWD/MID/DEF yang dipelajari di dalam model yang sama\n\n"
+                "xA pertandingan dihitung dari prediksi xA/90 × rata-rata menit L5 × peluang bermain. Histori xA L5 belum dipakai sebagai fitur karena eksperimen awal tidak menunjukkan peningkatan."
             )
-            pos_sel_xa = st.selectbox("Pilih Posisi (xA):", ["FWD", "MID", "DEF"], key="optb_pos_xa_sel")
+            pos_sel_xa = st.selectbox("Pilih posisi untuk evaluasi xA:", ["FWD", "MID", "DEF"], key="optb_pos_xa_sel")
             p_stats_xa = stats_xa.get(pos_sel_xa, stats_xa)
 
             # Highlight variabel dengan kontribusi terbesar
             top_var_xa = p_stats_xa.get('top_feature', '-')
             top_pct_xa = p_stats_xa.get('top_pct', 0.0)
             st.success(
-                f"🌟 **Variabel dengan Kontribusi Terbesar (xA - {pos_sel_xa}):** `{top_var_xa}` "
+                f"🌟 **Variabel dengan Kontribusi Terbesar (model xA pooled):** `{top_var_xa}` "
                 f"dengan pengaruh relatif **{top_pct_xa:.1f}%** berdasarkan koefisien regresi terstandarisasi (*Standardized Beta*)."
             )
 
             ac1, ac2, ac3, ac4 = st.columns(4)
+            r2_val_xa = p_stats_xa.get('r2')
+            mae_val_xa = p_stats_xa.get('mae')
+            int_val_xa = p_stats_xa.get('intercept')
             with ac1:
-                st.metric("R² Score (Akurasi Fitting)", f"{p_stats_xa.get('r2', 0.0):.4f}")
+                st.metric("R² Score (Out-of-Sample Walk-Forward)", f"{r2_val_xa:.4f}" if r2_val_xa is not None else "Belum Tersedia")
             with ac2:
-                st.metric("Mean Absolute Error (MAE)", f"{p_stats_xa.get('mae', 0.0):.4f}")
+                st.metric("Mean Absolute Error (MAE)", f"{mae_val_xa:.4f}" if mae_val_xa is not None else "Belum Tersedia")
             with ac3:
-                st.metric("Intercept (Konstanta β₀)", f"{p_stats_xa.get('intercept', 0.0):.4f}")
+                st.metric("Intercept (Konstanta β₀)", f"{int_val_xa:.4f}" if int_val_xa is not None else "N/A")
             with ac4:
                 st.metric("Variabel Terpenting", f"{top_var_xa}", f"{top_pct_xa:.1f}%")
+            st.caption(
+                f"Data latih empiris: {p_stats_xa.get('training_rows', 0)} baris · "
+                f"riwayat pertandingan: {p_stats_xa.get('match_history_rows', 0)} baris · "
+                f"dievaluasi out-of-sample: {p_stats_xa.get('evaluated_rows', 0)} baris · "
+                f"data eksternal dengan schema cocok: {p_stats_xa.get('historical_rows_used', 0)} baris."
+            )
 
             st.markdown("##### 📊 Peringkat Kontribusi Variabel Fitur (Feature Importance)")
             st.dataframe(
@@ -191,7 +166,7 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
                 }
             )
             st.caption("💡 *Catatan: 'Beta Standar' menstandarkan skala unit masing-masing fitur sehingga kontribusi tiap variabel dapat diperbandingkan secara adil dan objektif.*")
-            st.markdown("##### 🔍 Top 10 Komparasi Data Training (Aktual vs Prediksi)")
+            st.markdown("##### 🔍 Top 10 Komparasi Evaluasi Out-of-Sample (Aktual vs Prediksi Walk-Forward)")
             st.dataframe(p_stats_xa.get('eval_df', pd.DataFrame()), use_container_width=True)
 
     # -------------------------------------------------------------------------
@@ -380,7 +355,7 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
         'Diff Attack Team', 'Diff Defense Team', 'Peluang CS (%)',
         'xG Mult', 'xA Mult',
         'xPoin', 'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
-        'xG Pred (Match)', 'xA Pred (Match)', 'Avg Mins (L5M)', 'Lawan GW Berikutnya', 'Status'
+        'xG Pred (90)', 'xG Pred (Match)', 'xA Pred (90)', 'xA Pred (Match)', 'Avg Mins (L5M)', 'Lawan GW Berikutnya', 'Status'
     ]
 
     # Pastikan seluruh kolom tersedia
@@ -396,37 +371,40 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
     # Hitung rasio historis otomatis dari dataset pemain saat ini
     auto_xg_calc, auto_xa_calc, pos_history_stats = compute_automatic_position_multipliers(filtered_players)
 
-    with st.expander("⚙️ Kalibrasi Weighted Multiplier Posisi (Otomatis Berbasis History xG vs G & xA vs A)", expanded=True):
+    with st.expander("⚙️ Kalibrasi Multiplier xG Personal & Multiplier xA Posisi", expanded=True):
         c_mode, c_tog = st.columns([3, 2])
         with c_mode:
             mult_method = st.radio(
-                "Metode Penentuan Weighted Multiplier Posisi:",
+                "Metode Penentuan Multiplier:",
                 options=[
-                    "🤖 Otomatis (Dihitung dari History xG vs G & xA vs A)",
-                    "🛠️ Manual Custom (Penyesuaian Slider Bebas)"
+                    "🤖 Otomatis (xG personal, xA per posisi)",
+                    "🛠️ Manual Custom (xG dan xA per posisi)"
                 ],
                 index=0,
                 key="optb_mult_mode_radio",
-                help="Mode Otomatis secara dinamis menghitung rasio agregat efisiensi konversi performa riil (Gol/xG dan Asis/xA) untuk tiap posisi pemain."
+                help="Mode otomatis memakai Gol/xG masing-masing pemain untuk xG Points. Jika xG historis <0,5, dipakai rasio posisi sebagai fallback. xA tetap memakai Asis/xA agregat per posisi."
             )
         with c_tog:
             use_weighted = st.toggle(
-                "Aktifkan Weighted Multiplier Posisi",
+                "Aktifkan Weighted Multiplier",
                 value=True,
-                help="Bila aktif, menerapkan multiplier terbobot posisi (FWD/MID vs DEF/GK) berdasarkan tren konversi historis.",
+                help="Bila aktif, gunakan efisiensi personal pemain untuk xG dan efisiensi posisi untuk xA.",
                 key="toggle_pos_weighted_mult"
             )
 
         if not use_weighted:
+            use_personal_xg_mult = False
             active_xg_mult = {'FWD': 1.0, 'MID': 1.0, 'DEF': 1.0, 'GK': 0.0}
             active_xa_mult = {'FWD': 1.0, 'MID': 1.0, 'DEF': 1.0, 'GK': 1.0}
             st.info("ℹ️ **Mode Mentah (Non-Weighted)**: Seluruh pengali posisi diset ke `1.00x` (tanpa pembobotan).")
         elif mult_method.startswith("🤖"):
+            use_personal_xg_mult = True
             active_xg_mult = auto_xg_calc
             active_xa_mult = auto_xa_calc
             st.success(
-                "🤖 **Weighted Multiplier Posisi Otomatis Aktif**: Nilai multiplier di bawah dihitung otomatis "
-                "dari riwayat rasio agregat performa aktual: **xG Mult = ∑ Gol / ∑ xG** dan **xA Mult = ∑ Asis / ∑ xA**."
+                "🤖 **Multiplier otomatis aktif**: xG Points memakai rasio **gol ÷ xG milik pemain itu sendiri** "
+                "(dibatasi 0,50–2,00x; jika xG < 0,5 memakai rata-rata posisi). xA Points tetap memakai rasio **∑ asis ÷ ∑ xA per posisi**. "
+                "Multiplier personal yang dipakai terlihat di kolom `xG Mult`."
             )
 
             # Display Auto Multiplier Cards
@@ -449,8 +427,8 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
                         <div style="background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; margin-bottom: 8px;">
                             <div style="font-size: 0.75rem; color: #64748b; font-weight: 600;">{pts_label}</div>
                             <div style="margin-top: 4px; font-size: 0.82rem;">
-                                <b>xG Mult:</b> <span style="font-family: monospace; font-weight: 700; color: #2563eb;">{xg_val:.2f}x</span>
-                                <div style="font-size: 0.72rem; color: #64748b;">(G: {p_st.get('goals', 0):.0f} / xG: {p_st.get('xg', 0):.1f})</div>
+                                <b>xG fallback:</b> <span style="font-family: monospace; font-weight: 700; color: #2563eb;">{xg_val:.2f}x</span>
+                                <div style="font-size: 0.72rem; color: #64748b;">dipakai bila xG pemain &lt; 0,5</div>
                             </div>
                             <div style="margin-top: 4px; font-size: 0.82rem;">
                                 <b>xA Mult:</b> <span style="font-family: monospace; font-weight: 700; color: #d97706;">{xa_val:.2f}x</span>
@@ -461,6 +439,7 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
                         unsafe_allow_html=True
                     )
         else:
+            use_personal_xg_mult = False
             # Mode Manual Tuning
             st.caption("💡 *Sesuaikan slider di bawah untuk menguji skenario efisiensi penyelesaian (finishing) & kreasi peluang per posisi secara realtime.*")
             c_fwd, c_mid, c_def, c_gk = st.columns(4)
@@ -488,7 +467,11 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
     # Rekalkulasi xG Pts, xA Pts, dan xPoin (Option B) secara dinamis sesuai multiplier aktif
     poin_gol_map = {'GK': 10.0, 'DEF': 6.0, 'MID': 5.0, 'FWD': 4.0}
     poin_gol = sorted_optb['Posisi'].map(poin_gol_map).fillna(4.0)
-    xg_mult_series = sorted_optb['Posisi'].map(active_xg_mult).fillna(1.0)
+    xg_mult_series = (
+        compute_automatic_player_xg_multipliers(sorted_optb, fallback_xg=active_xg_mult)
+        if use_weighted and use_personal_xg_mult
+        else sorted_optb['Posisi'].map(active_xg_mult).fillna(1.0)
+    )
     xa_mult_series = sorted_optb['Posisi'].map(active_xa_mult).fillna(1.0)
 
     sorted_optb['xG Mult'] = xg_mult_series.round(2)
@@ -509,10 +492,10 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
     gk_m_str = f"GK: {active_xg_mult.get('GK', 0.00):.2f}x xG / {active_xa_mult.get('GK', 0.50):.2f}x xA"
 
     st.info(
-        f"⚖️ **Positional Weighted Multipliers & Normalized Points Formula**: Komponen `xG Pts` dan `xA Pts` dikalibrasi secara otomatis berbasis tren historis "
+        f"⚖️ **Multiplier & Formula Poin**: `xG Pts` memakai efektivitas gol/xG personal pemain pada mode otomatis; `xA Pts` memakai tren konversi per posisi "
         f"({fwd_m_str}, {mid_m_str}, {def_m_str}, {gk_m_str}) "
         f"untuk merefleksikan tren efisiensi konversi aktual *'Goal > xG'* dan *'Assist > xA'* serta menggantikan nilai mentah xG/xA dengan kontribusi poin ternormalisasi: "
-        f"`xG Pts = xG Pred * Poin Gol Posisi * Pos_xG_Mult` dan `xA Pts = xA Pred * 3.0 * Pos_xA_Mult`."
+        f"`xG Pts = xG Pred * Poin Gol Posisi * xG_Mult pemain` dan `xA Pts = xA Pred * 3.0 * Pos_xA_Mult`."
     )
 
     st.dataframe(
@@ -542,7 +525,7 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
             "xG Mult": st.column_config.NumberColumn(
                 "xG Mult",
                 format="%.2fx",
-                help="Weighted Multiplier Posisi untuk xG berbasis tren historis 'Goal > xG' (FWD: 1.08x, MID: 1.04x, DEF: 0.88x)"
+                help="Multiplier xG personal = gol pemain ÷ xG pemain (dibatasi 0,50–2,00x); fallback ke rata-rata posisi bila xG pemain < 0,5."
             ),
             "xA Mult": st.column_config.NumberColumn(
                 "xA Mult",
@@ -558,8 +541,10 @@ def render_tab_option_b(filtered_players, stats_xg, stats_xa, df_teams=None, fix
             "xCS Pts": st.column_config.NumberColumn(format="%.2f"),
             "xBP": st.column_config.NumberColumn(format="%.2f"),
             "xG Pred (Match)": st.column_config.NumberColumn(format="%.2f"),
+            "xG Pred (90)": st.column_config.NumberColumn(format="%.3f"),
             "xA Pred (Match)": st.column_config.NumberColumn(format="%.2f"),
+            "xA Pred (90)": st.column_config.NumberColumn(format="%.3f", help="Prediksi expected assists per 90 menit; estimasi pertandingan dikalikan menit harapan."),
             "Avg Mins (L5M)": st.column_config.NumberColumn(format="%.1f mins")
         }
     )
-    st.caption("💡 *Option B Formula: xPoin = xMins_Pts + xG_Pts(diff_att * Pos_xG_Mult) + xA_Pts(diff_att * Pos_xA_Mult) + xSaves_Pts + xDC_Pts(diff_def) + xCS_Pts(Dixon-Coles CS%) + xBP.*")
+    st.caption("💡 *Option B Formula: xPoin = xMins_Pts + xG_Pts(xG Mult personal) + xA_Pts(Pos_xA_Mult) + xSaves_Pts + xDC_Pts(diff_def) + xCS_Pts(Dixon-Coles CS%) + xBP.*")
