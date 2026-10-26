@@ -96,6 +96,20 @@ section[data-testid="stSidebar"] .stMarkdown h3 {
     font-weight: 700;
 }
 
+/* Keep filter labels readable against the dark sidebar, including when the
+   Streamlit theme configured for the deployment is light. */
+section[data-testid="stSidebar"] [data-testid="stWidgetLabel"],
+section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] *,
+section[data-testid="stSidebar"] .stMarkdown,
+section[data-testid="stSidebar"] .stMarkdown p,
+section[data-testid="stSidebar"] label {
+    color: #e2e8f0 !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stSlider"] [data-testid="stMarkdownContainer"] {
+    color: #e2e8f0 !important;
+}
+
 /* Sidebar Inputs and Selects */
 div[data-baseweb="select"] > div, div[data-baseweb="input"] > div {
     border-radius: 8px !important;
