@@ -30,13 +30,13 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
     st.subheader("🛡️ Analisis Komprehensif Kekuatan Tim Premier League (Team Strength Analysis)")
     st.write("Modul agregasi statistik 20 klub Premier League: mengevaluasi rata-rata poin FPL pemain, daya gedor ofensif (Gol, xG, xA), soliditas pertahanan (Clean Sheet, xGC, Saves), serta tingkat kemudahan jadwal pertandingan mendatang (FDR).")
 
-    df_teams = calculate_team_strength_analysis(fpl_data, players_df, fdr_summary)
+    df_teams = calculate_team_strength_analysis(fpl_data, players_df, fdr_summary, fixtures_data)
 
     if not df_teams.empty:
         # 1. Highlights / Summary KPI Row
         top_strength_team = df_teams.sort_values(by="Indeks Kekuatan", ascending=False).iloc[0]
-        top_attack_team = df_teams.sort_values(by="Total xG", ascending=False).iloc[0]
-        top_defense_team = df_teams.sort_values(by="Clean Sheet", ascending=False).iloc[0]
+        top_attack_team = df_teams.sort_values(by="Skor Serangan", ascending=False).iloc[0]
+        top_defense_team = df_teams.sort_values(by="Skor Pertahanan", ascending=False).iloc[0]
         easiest_fdr_team = df_teams.sort_values(by="FDR3", ascending=True).iloc[0]
         top_dependency_team = df_teams.sort_values(by="% Poin Top Player", ascending=False).iloc[0]
 
@@ -50,14 +50,14 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
         with tk2:
             st.metric(
                 "⚔️ Serangan Tertajam",
-                f"{top_attack_team['Klub']} ({top_attack_team['Total xG']:.2f} xG)",
-                f"{top_attack_team['Total Gol']} Gol dicetak"
+                f"{top_attack_team['Klub']} ({top_attack_team['xG per Match']:.2f} xG/m)" if pd.notna(top_attack_team['xG per Match']) else f"{top_attack_team['Klub']} (belum ada sampel)",
+                f"Skor serangan {top_attack_team['Skor Serangan']:.1f}/100"
             )
         with tk3:
             st.metric(
                 "🛡️ Pertahanan Terkokoh",
-                f"{top_defense_team['Klub']} ({top_defense_team['Clean Sheet']} CS)",
-                f"{top_defense_team['Total Saves']} Saves"
+                f"{top_defense_team['Klub']} ({top_defense_team['Clean Sheet Rate (%)']:.1f}% CS)" if pd.notna(top_defense_team['Clean Sheet Rate (%)']) else f"{top_defense_team['Klub']} (belum ada sampel)",
+                f"{top_defense_team['Clean Sheet']} clean sheet · Skor {top_defense_team['Skor Pertahanan']:.1f}/100"
             )
         with tk4:
             st.metric(
@@ -76,15 +76,21 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
         PRESET_TEAM_COLUMNS = {
             "⭐ Komposit & Klasemen": [
                 'Klub', 'Indeks Kekuatan', 'Kategori Tim', 'Skor Serangan', 'Skor Pertahanan',
+                'Matches Played',
                 'Kemudahan Jadwal (%)', 'Rata-rata Poin Pemain', 'Total Poin Skuad', 'Top Aset FPL',
                 'Lawan Berikutnya', 'FDR1', 'Nilai Skuad (£m)'
             ],
             "⚔️ Potensi Serangan": [
-                'Klub', 'Skor Serangan', 'Total Gol', 'Total xG', 'Total xA', 'Total xGI',
+                'Klub', 'Skor Serangan', 'xG per Match', 'xG per Match (Smoothed)',
+                'Gol per Match', 'Gol per Match (Smoothed)', 'Matches Played',
+                'Total Gol', 'Total xG', 'Total xA', 'Total xGI',
                 'Top Scorer', 'Top Creator', 'Lawan Berikutnya', 'FDR1', 'Indeks Kekuatan'
             ],
             "🛡️ Pertahanan & Kebobolan": [
-                'Klub', 'Skor Pertahanan', 'Clean Sheet', 'Kebobolan (GC)', 'Total xGC', 'Total Saves',
+                'Klub', 'Skor Pertahanan', 'Clean Sheet Rate (%)', 'Clean Sheet', 'Matches Completed',
+                'Clean Sheet Rate (Smoothed %)', 'xGC per Match', 'xGC per Match (Smoothed)',
+                'Kebobolan per Match', 'Kebobolan per Match (Smoothed)',
+                'Kebobolan (GC)', 'Total xGC', 'Total Saves',
                 'Lawan Berikutnya', 'FDR1', 'FDR3', 'FDR5', 'Indeks Kekuatan'
             ],
             "🎯 Dependensi & Talisman": [
@@ -211,7 +217,7 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
             ),
             "Skor Serangan": st.column_config.ProgressColumn(
                 "Skor Serangan",
-                help="Skor agresivitas ofensif (0-100) berbasis akumulasi xG dan Gol.",
+                help="Skor ofensif 0-100 berbasis xG dan gol per laga yang dihaluskan ke rata-rata liga (prior 5 laga), agar sampel pendek tidak terlalu ekstrem.",
                 min_value=0,
                 max_value=100,
                 format="%.1f",
@@ -219,7 +225,7 @@ def render_tab_team_strength(fpl_data, players_df, fdr_summary, fixtures_data=No
             ),
             "Skor Pertahanan": st.column_config.ProgressColumn(
                 "Skor Pertahanan",
-                help="Skor ketangguhan defensif (0-100): 40% minimalisir xGC (underlying), 35% minimalisir Kebobolan Riil (GC), dan 25% Clean Sheet (konversi FPL).",
+                help="Skor komparatif 0-100: 40% xGC/laga, 35% kebobolan/laga, 25% laju clean sheet. Semua laju dihaluskan ke rata-rata liga (prior 5 laga); bukan probabilitas clean sheet.",
                 min_value=0,
                 max_value=100,
                 format="%.1f",
