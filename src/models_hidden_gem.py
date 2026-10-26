@@ -41,17 +41,6 @@ def build_hidden_gem_and_haul_dataset(_fpl_data, fdr_summary, current_gw):
     # Filter pemain aktif (menit > 0)
     active_elements = [el for el in elements if int(el.get('minutes', 0)) > 0]
     
-    # Hitung rata-rata defensif tim (xGC/90) untuk opp_roll5_xGC_per90
-    team_xgc_map = {}
-    for t in teams:
-        t_id = t['id']
-        t_players = [p for p in elements if p.get('team') == t_id]
-        def_players = [p for p in t_players if p.get('element_type') in [1, 2]]
-        tot_xgc = sum(float(p.get('expected_goals_conceded', 0.0) or 0.0) for p in def_players)
-        tot_def_mins = sum(int(p.get('minutes', 0) or 0) for p in def_players)
-        xgc_90 = (tot_xgc / tot_def_mins * 90.0) if tot_def_mins > 0 else 1.35
-        team_xgc_map[t_id] = round(xgc_90, 2)
-
     def fetch_player_matches(el):
         p_id = el['id']
         hist = fetch_player_history_raw(p_id)
@@ -70,7 +59,12 @@ def build_hidden_gem_and_haul_dataset(_fpl_data, fdr_summary, current_gw):
     pos_numeric_map = {'GKP': 1, 'DEF': 2, 'MID': 3, 'FWD': 4, 1: 1, 2: 2, 3: 3, 4: 4}
 
     for p_id, (el, hist) in all_player_histories.items():
-        sorted_hist = sorted(hist, key=lambda m: m.get('round', m.get('event', 0)))
+        # Do not train on the active GW: its match stats may still be partial.
+        # This also makes each DGW target share a feature snapshot from prior GWs only.
+        sorted_hist = sorted(
+            [m for m in hist if int(m.get('round', m.get('event', 0)) or 0) < int(current_gw)],
+            key=lambda m: (int(m.get('round', m.get('event', 0)) or 0), m.get('kickoff_time', ''))
+        )
         if not sorted_hist:
             continue
 
@@ -83,24 +77,19 @@ def build_hidden_gem_and_haul_dataset(_fpl_data, fdr_summary, current_gw):
         p_chance = float(el.get('chance_of_playing_next_round') if el.get('chance_of_playing_next_round') is not None else 100)
         p_ownership = float(el.get('selected_by_percent', 0.0))
 
-        # Array metrik akumulatif match-by-match
-        match_points = [int(m.get('total_points', 0)) for m in sorted_hist]
-        match_mins = [int(m.get('minutes', 0)) for m in sorted_hist]
-        
-        # Volatilitas & Ceiling Poin
-        std_points = float(np.std(match_points)) if len(match_points) > 1 else 0.0
-        max_points = int(np.max(match_points)) if match_points else 0
-
         # Iterasi setiap match untuk membangun training set (Lagged / Rolling features)
         for i, m in enumerate(sorted_hist):
             pts_actual = int(m.get('total_points', 0))
             is_haul = 1 if pts_actual >= 10 else 0
+            target_gw = int(m.get('round', m.get('event', 0)) or 0)
 
-            # Gunakan histori laga sebelumnya (sebelum match i) untuk mencegah data leakage
-            past_matches = sorted_hist[:i]
+            # Use only matches from earlier GWs. Exclude all same-GW matches,
+            # including the first fixture of a DGW when building later fixture rows.
+            past_matches = [x for x in sorted_hist if int(x.get('round', x.get('event', 0)) or 0) < target_gw]
             if not past_matches:
-                # Cold start match 1
-                past_matches = [m]
+                # No prior season evidence: omit this target row rather than use
+                # its own outcome as an artificial cold-start feature.
+                continue
 
             last_5 = past_matches[-5:]
             
@@ -122,15 +111,14 @@ def build_hidden_gem_and_haul_dataset(_fpl_data, fdr_summary, current_gw):
             player_form = float(np.mean([int(x.get('total_points', 0)) for x in last_5]))
 
             # Opponent features
-            opp_id = m.get('opponent_team', 1)
-            opp_fdr_info = fdr_summary.get(opp_id, {})
-            fdr_val = float(opp_fdr_info.get('FDR1', m.get('difficulty', 3.0)))
-            opp_roll5_xgc = float(team_xgc_map.get(opp_id, 1.35))
+            # Historical FDR is available on the match row. The live fdr_summary
+            # describes the current upcoming fixture and must not be reused here.
+            fdr_val = float(m.get('difficulty') or 3.0)
 
-            # Running std & max points up to match i
+            # Volatility and ceiling use only prior-GW points, never season-end stats.
             past_pts = [int(x.get('total_points', 0)) for x in past_matches]
             run_std = float(np.std(past_pts)) if len(past_pts) > 1 else 0.0
-            run_max = int(np.max(past_pts)) if past_pts else pts_actual
+            run_max = int(np.max(past_pts))
 
             train_rows.append({
                 'player_id': p_id,
@@ -140,7 +128,6 @@ def build_hidden_gem_and_haul_dataset(_fpl_data, fdr_summary, current_gw):
                 'minutes': mins_val,
                 'player_form': player_form,
                 'FDR': fdr_val,
-                'opp_roll5_xGC_per90': opp_roll5_xgc,
                 'underperformance_index': underperformance_index,
                 'roll_xGI': roll_xgi,
                 'roll_actual_GI': roll_actual_GI,
@@ -153,8 +140,6 @@ def build_hidden_gem_and_haul_dataset(_fpl_data, fdr_summary, current_gw):
         # Feature Upcoming Gameweek
         f_info = fdr_summary.get(p_team, {})
         next_fdr = float(f_info.get('FDR1', 3.0))
-        next_opp_id = f_info.get('Next_Opponent_ID', 1)
-        next_opp_xgc = float(team_xgc_map.get(next_opp_id, 1.35)) if next_opp_id else 1.35
         next_opp_fmt = f_info.get('Next_Opponent_Fmt', '-')
 
         last_5_all = sorted_hist[-5:]
@@ -169,6 +154,9 @@ def build_hidden_gem_and_haul_dataset(_fpl_data, fdr_summary, current_gw):
         curr_underperformance = float(curr_xgi_5 - curr_actual_gi_5)
         curr_mins = float(np.mean([int(x.get('minutes', 0)) for x in last_5_all]))
         curr_form = float(np.mean([int(x.get('total_points', 0)) for x in last_5_all]))
+        prior_points = [int(x.get('total_points', 0)) for x in sorted_hist]
+        curr_std_points = float(np.std(prior_points)) if len(prior_points) > 1 else 0.0
+        curr_max_points = int(np.max(prior_points)) if prior_points else 0
 
         upcoming_rows.append({
             'id': p_id,
@@ -183,12 +171,11 @@ def build_hidden_gem_and_haul_dataset(_fpl_data, fdr_summary, current_gw):
             'minutes': round(curr_mins, 1),
             'player_form': round(curr_form, 2),
             'FDR': round(next_fdr, 1),
-            'opp_roll5_xGC_per90': round(next_opp_xgc, 2),
             'roll_xGI': round(curr_xgi_5, 2),
             'roll_actual_GI': round(curr_actual_gi_5, 1),
             'underperformance_index': round(curr_underperformance, 2),
-            'std_points': round(std_points, 2),
-            'max_points': int(max_points)
+            'std_points': round(curr_std_points, 2),
+            'max_points': curr_max_points
         })
 
     df_train = pd.DataFrame(train_rows)
@@ -201,11 +188,11 @@ def train_xgboost_haul_model(df_train, df_upcoming):
     """
     Latih model XGBoost Classifier untuk memprediksi probabilitas Haul (is_haul = 1).
     Fitur input:
-    ['posisi', 'minutes', 'player_form', 'FDR', 'opp_roll5_xGC_per90', 'underperformance_index', 'std_points', 'max_points']
+    ['posisi', 'minutes', 'player_form', 'FDR', 'underperformance_index', 'std_points', 'max_points']
     """
     feature_cols = [
         'posisi', 'minutes', 'player_form', 'FDR',
-        'opp_roll5_xGC_per90', 'underperformance_index', 'std_points', 'max_points'
+        'underperformance_index', 'std_points', 'max_points'
     ]
 
     feature_name_id = {
@@ -213,7 +200,6 @@ def train_xgboost_haul_model(df_train, df_upcoming):
         'minutes': 'Avg Menit Bermain (L5M)',
         'player_form': 'Player Form (Avg Poin L5M)',
         'FDR': 'Tingkat Kesulitan Lawan (FDR)',
-        'opp_roll5_xGC_per90': 'xGC/90 Lawan (Defensive Leakage)',
         'underperformance_index': 'Underperformance Index (xGI - GI)',
         'std_points': 'Volatilitas Poin (Std Dev)',
         'max_points': 'Ceiling Poin Tertinggi (Max Pts)'
