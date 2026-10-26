@@ -12,7 +12,20 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy.stats import poisson
-from src.processors import get_team_short_map, bivariate_dixon_coles_cs_prob
+from src.processors import (
+    get_team_short_map,
+    bivariate_dixon_coles_cs_prob,
+)
+
+
+def calculate_matchup_differentials(home_attack, home_defense, away_attack, away_defense):
+    """Return matchup differentials without a separate venue adjustment."""
+    return {
+        'h_att_diff': round(home_attack - away_defense, 1),
+        'h_def_diff': round(home_defense - away_attack, 1),
+        'a_att_diff': round(away_attack - home_defense, 1),
+        'a_def_diff': round(away_defense - home_attack, 1),
+    }
 
 def simulate_bivariate_poisson_match(lambda_h, lambda_a, max_goals=6, rho=-0.06):
     """
@@ -526,9 +539,10 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
     # Tab 3: Komparasi Head-to-Head 2 Klub
     # Tab 4: Analisis Dampak Home vs Away (FDR, Serang & Bertahan)
     # -------------------------------------------------------------------------
-    tab_matchday, tab_matrix, tab_h2h, tab_home_away = st.tabs([
+    tab_matchday, tab_matrix, tab_differential, tab_h2h, tab_home_away = st.tabs([
         "⚔️ Next Gameweek",
         "📅 Fixture Difficulty",
+        "📊 Attack & Defense Diff",
         "👥 Club H2H",
         "🏟️ Home vs Away"
     ])
@@ -583,7 +597,7 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                 options=[
                     "Semua Pertandingan (10 Match)",
                     "🟢 Potensi Pesta Gol Home (Diff Serang > +5)",
-                    "🛡️ Peluang Clean Sheet Tinggi (Diff Def > +5)",
+                    "🛡️ Indikator Diff Defense Tinggi (heuristik, ≥ +5)",
                     "✈️ Potensi Poin Tim Away (Diff Serang > 0)",
                     "⚔️ Big Match / Duel Sengit"
                 ],
@@ -623,15 +637,12 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                 a_att = a_stats.get('att', 50.0)
                 a_def = a_stats.get('def', 50.0)
 
-                # Differentials Serang & Bertahan (Menggunakan Modulasi Keunggulan Venue Pertandingan):
-                # 1. Home Attack vs Away Defense (Dengan bonus atmosfer kandang tuan rumah)
-                h_att_diff = round((h_att + 4.0) - (a_def - 4.0), 1)
-                # 2. Home Defense vs Away Attack (Positive = Home Clean Sheet potential high)
-                h_def_diff = round((h_def + 4.0) - (a_att - 4.0), 1)
-                # 3. Away Attack vs Home Defense (Dengan penalti tandang tim tamu)
-                a_att_diff = round((a_att - 4.0) - (h_def + 4.0), 1)
-                # 4. Away Defense vs Home Attack (Positive = Away Clean Sheet potential high)
-                a_def_diff = round((a_def - 4.0) - (h_att + 4.0), 1)
+                # Shared formulas keep this view and its matrix aligned.
+                matchup_diffs = calculate_matchup_differentials(h_att, h_def, a_att, a_def)
+                h_att_diff = matchup_diffs['h_att_diff']
+                h_def_diff = matchup_diffs['h_def_diff']
+                a_att_diff = matchup_diffs['a_att_diff']
+                a_def_diff = matchup_diffs['a_def_diff']
 
                 # Scout Verdict Generation
                 h_top_asset = h_stats.get('top_asset', '-')
@@ -644,13 +655,13 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                     verdict_bullets.append(f"⚠️ Serangan {h_short} Berpotensi Tertahan")
 
                 if h_def_diff >= 6.0:
-                    verdict_bullets.append(f"🛡️ Clean Sheet {h_short} Sangat Potensial (+{h_def_diff:.1f})")
+                    verdict_bullets.append(f"🛡️ Indikator bertahan {h_short} tinggi; sinyal heuristik (+{h_def_diff:.1f})")
 
                 if a_att_diff >= 6.0:
                     verdict_bullets.append(f"🎯 Target Aset Serang {a_short} ({a_top_asset})")
 
                 if a_def_diff >= 6.0:
-                    verdict_bullets.append(f"🛡️ Clean Sheet {a_short} Sangat Potensial (+{a_def_diff:.1f})")
+                    verdict_bullets.append(f"🛡️ Indikator bertahan {a_short} tinggi; sinyal heuristik (+{a_def_diff:.1f})")
 
                 if h_att_diff >= 2.0 and a_att_diff >= 2.0:
                     verdict_bullets.append("🔥 Potensi Laga Hujan Gol (Kedua Tim Saling Bobol)")
@@ -725,14 +736,14 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                 else:
                     st.metric("Potensi Gol Tertinggi", "-", "-")
             with m_col4:
-                st.metric("Peluang CS Terbaik", f"{cs_team_name}", f"Def Diff: +{cs_team_val:.1f}")
+                st.metric("Diff Defense Tertinggi", f"{cs_team_name}", f"Indikator: +{cs_team_val:.1f}")
 
             # Guidance Note Callout
             st.markdown("""
             <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #10b981; border-radius: 8px; padding: 10px 14px; margin: 12px 0 16px 0; font-size: 0.82rem; color: #334155; line-height: 1.45;">
                 <b>💡 Panduan Analisis Differential Matchday FPL:</b><br/>
                 • <b>Differential Serang (+) Tinggi</b>: Lini serang klub jauh melampaui pertahanan lawan ➔ <b>Prioritaskan Penyerang/Gelandang (FWD/MID)</b> klub tersebut sebagai pencetak gol & calon kapten.<br/>
-                • <b>Differential Bertahan (+) Tinggi</b>: Lini belakang klub sangat solid menghadapi serangan lawan ➔ <b>Prioritaskan Bek/Kiper (DEF/GKP)</b> untuk target Clean Sheet 6 poin.
+                • <b>Diff Defense (+) Tinggi</b>: indikator komparatif, bukan probabilitas clean sheet. Uji awal satu musim (GW2–7) menghasilkan AUC 0,551; pada holdout GW5–7, ambang +5 akurat 51,7%, di bawah baseline sederhana 75% yang selalu memprediksi tanpa clean sheet. Gunakan hanya sebagai shortlist, bukan klaim probabilitas.
             </div>
             """, unsafe_allow_html=True)
 
@@ -740,7 +751,7 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
             filtered_match_list = list(processed_matches)
             if match_filter_type == "🟢 Potensi Pesta Gol Home (Diff Serang > +5)":
                 filtered_match_list = [m for m in filtered_match_list if m['h_att_diff'] >= 5.0]
-            elif match_filter_type == "🛡️ Peluang Clean Sheet Tinggi (Diff Def > +5)":
+            elif match_filter_type == "🛡️ Indikator Diff Defense Tinggi (heuristik, ≥ +5)":
                 filtered_match_list = [m for m in filtered_match_list if m['h_def_diff'] >= 5.0 or m['a_def_diff'] >= 5.0]
             elif match_filter_type == "✈️ Potensi Poin Tim Away (Diff Serang > 0)":
                 filtered_match_list = [m for m in filtered_match_list if m['a_att_diff'] > 0]
@@ -767,9 +778,9 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                             a_fdr_style = FDR_PALETTE.get(match_item['fdr_a'], FDR_PALETTE[3])
 
                             h_pill_att = get_diff_pill_html(match_item['h_att_diff'], "⚔️ Serang vs Def Lawan")
-                            h_pill_def = get_diff_pill_html(match_item['h_def_diff'], "🛡️ Def vs Serang (CS)")
+                            h_pill_def = get_diff_pill_html(match_item['h_def_diff'], "🛡️ Def vs Serang")
                             a_pill_att = get_diff_pill_html(match_item['a_att_diff'], "⚔️ Serang vs Def Lawan")
-                            a_pill_def = get_diff_pill_html(match_item['a_def_diff'], "🛡️ Def vs Serang (CS)")
+                            a_pill_def = get_diff_pill_html(match_item['a_def_diff'], "🛡️ Def vs Serang")
 
                             card_html = f"""
                             <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; box-shadow: 0 2px 6px rgba(0,0,0,0.03);">
@@ -864,9 +875,9 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                         'Jadwal Kickoff': m['kickoff'],
                         'FDR (H vs A)': f"FDR {m['fdr_h']} vs FDR {m['fdr_a']}",
                         'Diff Serang Home': m['h_att_diff'],
-                        'Diff CS Home': m['h_def_diff'],
+                        'Diff Defense Home': m['h_def_diff'],
                         'Diff Serang Away': m['a_att_diff'],
-                        'Diff CS Away': m['a_def_diff'],
+                        'Diff Defense Away': m['a_def_diff'],
                         'Top Aset Home': m['h_top_asset'],
                         'Top Aset Away': m['a_top_asset'],
                         'Scout Recommendation': m['verdict']
@@ -882,9 +893,9 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                         "Jadwal Kickoff": st.column_config.TextColumn("Kickoff (WIB)", width="medium"),
                         "FDR (H vs A)": st.column_config.TextColumn("FDR Tingkat Kesulitan", width="small"),
                         "Diff Serang Home": st.column_config.NumberColumn("Diff Serang Home", format="%+.1f", width="small", help="Selisih Serangan Home vs Pertahanan Lawan"),
-                        "Diff CS Home": st.column_config.NumberColumn("Diff CS Home", format="%+.1f", width="small", help="Selisih Pertahanan Home vs Serangan Lawan (Peluang Clean Sheet)"),
+                        "Diff Defense Home": st.column_config.NumberColumn("Diff Defense Home", format="%+.1f", width="small", help="Selisih skor pertahanan Home vs skor serangan lawan; bukan probabilitas clean sheet."),
                         "Diff Serang Away": st.column_config.NumberColumn("Diff Serang Away", format="%+.1f", width="small", help="Selisih Serangan Away vs Pertahanan Lawan"),
-                        "Diff CS Away": st.column_config.NumberColumn("Diff CS Away", format="%+.1f", width="small", help="Selisih Pertahanan Away vs Serangan Lawan"),
+                        "Diff Defense Away": st.column_config.NumberColumn("Diff Defense Away", format="%+.1f", width="small", help="Selisih skor pertahanan Away vs skor serangan lawan; bukan probabilitas clean sheet."),
                         "Top Aset Home": st.column_config.TextColumn("Aset Utama Home", width="small"),
                         "Top Aset Away": st.column_config.TextColumn("Aset Utama Away", width="small"),
                         "Scout Recommendation": st.column_config.TextColumn("Rekomendasi Taktis FPL", width="large")
@@ -1283,7 +1294,181 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
                 )
 
     # =========================================================================
-    # TAB 3: KOMPARASI HEAD-TO-HEAD 2 KLUB (DUEL FIXTURES)
+    # TAB 3: MATCHUP MATRIX BERDASARKAN DIFFERENTIAL SERANGAN & PERTAHANAN
+    # =========================================================================
+    with tab_differential:
+        st.markdown("#### 📊 Matriks Fixture: Diff Attack & Diff Defense")
+        st.caption(
+            "Format per klub seperti matriks Fixture Difficulty. Nilai menggunakan skor serangan/pertahanan "
+            "tim dan rumus yang sama persis dengan sub tab Next Gameweek, tanpa penyesuaian venue tambahan."
+        )
+
+        horizon_choice = st.pills(
+            "Cakupan Laga (Horizon):",
+            options=["3 Laga (Transfer Dekat)", "5 Laga (Wildcard)", "10 Laga (Penuh)"],
+            default="5 Laga (Wildcard)",
+            key="differential_horizon_pills"
+        )
+        if not horizon_choice:
+            horizon_choice = "5 Laga (Wildcard)"
+        horizon_n = 3 if "3 Laga" in str(horizon_choice) else (10 if "10 Laga" in str(horizon_choice) else 5)
+
+        upcoming_fixtures = [
+            fixture for fixture in fixtures_data
+            if fixture.get('event') is not None
+            and not fixture.get('finished')
+            and not fixture.get('finished_provisional')
+            and not fixture.get('started')
+        ]
+        upcoming_fixtures.sort(key=lambda f: (int(f.get('event') or 0), f.get('kickoff_time', ''), int(f.get('id') or 0)))
+        upcoming_gws = sorted({int(f['event']) for f in upcoming_fixtures})
+
+        if not upcoming_fixtures or not upcoming_gws:
+            st.info("Belum ada fixture mendatang atau data tim untuk menghitung differential.")
+        else:
+            fixtures_by_team = {}
+            for fixture in upcoming_fixtures:
+                gw = int(fixture['event'])
+                home_id = int(fixture['team_h'])
+                away_id = int(fixture['team_a'])
+                home_name = teams_dict.get(home_id, f"Team {home_id}")
+                away_name = teams_dict.get(away_id, f"Team {away_id}")
+                home_stats = team_stats_map.get(home_id) or team_stats_map.get(home_name, {})
+                away_stats = team_stats_map.get(away_id) or team_stats_map.get(away_name, {})
+                home_attack = float(home_stats.get('att', 50.0))
+                home_defense = float(home_stats.get('def', 50.0))
+                away_attack = float(away_stats.get('att', 50.0))
+                away_defense = float(away_stats.get('def', 50.0))
+                matchup_diffs = calculate_matchup_differentials(
+                    home_attack, home_defense, away_attack, away_defense
+                )
+                home_entry = {
+                    'gw': gw,
+                    'kickoff': fixture.get('kickoff_time') or '',
+                    'fixture_id': int(fixture.get('id') or 0),
+                    'opp_id': away_id,
+                    'venue': 'H',
+                    'attack': matchup_diffs['h_att_diff'],
+                    'defense': matchup_diffs['h_def_diff'],
+                }
+                away_entry = {
+                    'gw': gw,
+                    'kickoff': fixture.get('kickoff_time') or '',
+                    'fixture_id': int(fixture.get('id') or 0),
+                    'opp_id': home_id,
+                    'venue': 'A',
+                    'attack': matchup_diffs['a_att_diff'],
+                    'defense': matchup_diffs['a_def_diff'],
+                }
+                fixtures_by_team.setdefault(home_id, []).append(home_entry)
+                fixtures_by_team.setdefault(away_id, []).append(away_entry)
+
+            # Match Fixture Difficulty: cakupan dihitung per klub berdasarkan N fixture,
+            # sehingga DGW memakai lebih dari satu slot dalam horizon.
+            fixtures_by_team_horizon = {
+                team_id: sorted(
+                    entries,
+                    key=lambda entry: (entry['gw'], entry['kickoff'], entry['fixture_id'])
+                )[:horizon_n]
+                for team_id, entries in fixtures_by_team.items()
+            }
+            horizon_gws = sorted({
+                entry['gw']
+                for entries in fixtures_by_team_horizon.values()
+                for entry in entries
+            })
+            first_upcoming_gw = upcoming_gws[0]
+            gw_columns = [
+                "GW H" if gw == first_upcoming_gw else f"GW H+{gw - first_upcoming_gw}"
+                for gw in horizon_gws
+            ]
+            gw_column_for_event = dict(zip(horizon_gws, gw_columns))
+
+            differential_rows = []
+            for team_id, team_name in sorted(teams_dict.items(), key=lambda item: str(item[1])):
+                team_id = int(team_id)
+                row = {'Klub': team_name}
+                attack_values = []
+                defense_values = []
+                team_entries = fixtures_by_team_horizon.get(team_id, [])
+                entries_by_gw = {}
+                for entry in team_entries:
+                    entries_by_gw.setdefault(entry['gw'], []).append(entry)
+                    attack_values.append(float(entry['attack']))
+                    defense_values.append(float(entry['defense']))
+                venues = [entry['venue'] for entry in team_entries]
+
+                for gw in horizon_gws:
+                    entries = entries_by_gw.get(gw, [])
+                    cell_parts = []
+                    for entry in entries:
+                        opponent_name = teams_dict.get(entry['opp_id'], 'TBD')
+                        opponent_short = club_short_map.get(entry['opp_id']) or club_short_map.get(opponent_name, opponent_name[:3].upper())
+                        att = entry['attack']
+                        deff = entry['defense']
+                        att_text = f"{float(att):+.1f}" if att is not None else "-"
+                        def_text = f"{float(deff):+.1f}" if deff is not None else "-"
+                        cell_parts.append(f"{opponent_short} ({entry['venue']}) · Att {att_text} / Def {def_text}")
+                    row[gw_column_for_event[gw]] = " | ".join(cell_parts) if cell_parts else "-"
+
+                row['Avg Diff Attack'] = float(np.mean(attack_values)) if attack_values else np.nan
+                row['Avg Diff Defense'] = float(np.mean(defense_values)) if defense_values else np.nan
+                row['Venue'] = f"{venues.count('H')} H / {venues.count('A')} A" if venues else "-"
+                differential_rows.append(row)
+
+            diff_df = pd.DataFrame(differential_rows)
+            ordered_columns = ['Klub', 'Avg Diff Attack', 'Avg Diff Defense', 'Venue'] + gw_columns
+            diff_df = diff_df.reindex(columns=ordered_columns)
+
+            def style_differential(value):
+                if pd.isna(value):
+                    return "background-color: #f1f5f9; color: #64748b;"
+                if value >= 10:
+                    return "background-color: #dcfce7; color: #166534; font-weight: 700;"
+                if value > 0:
+                    return "background-color: #ecfdf5; color: #047857; font-weight: 600;"
+                if value <= -10:
+                    return "background-color: #fee2e2; color: #991b1b; font-weight: 700;"
+                if value < 0:
+                    return "background-color: #fff7ed; color: #c2410c; font-weight: 600;"
+                return "background-color: #f1f5f9; color: #334155;"
+
+            def style_fixture_cell(value):
+                if not isinstance(value, str) or value == "-":
+                    return "background-color: #f1f5f9; color: #64748b;"
+                try:
+                    att_val = float(value.split("Att ", 1)[1].split(" /", 1)[0])
+                    def_val = float(value.split("Def ", 1)[1].split(" |", 1)[0])
+                    mean_diff = (att_val + def_val) / 2.0
+                    if mean_diff >= 10:
+                        return "background-color: #dcfce7; color: #166534; font-weight: 700;"
+                    if mean_diff > 0:
+                        return "background-color: #ecfdf5; color: #047857; font-weight: 600;"
+                    if mean_diff <= -10:
+                        return "background-color: #fee2e2; color: #991b1b; font-weight: 700;"
+                    if mean_diff < 0:
+                        return "background-color: #fff7ed; color: #c2410c; font-weight: 600;"
+                except (ValueError, IndexError):
+                    return ""
+                return "background-color: #f1f5f9; color: #334155;"
+
+            fixture_columns = [column for column in gw_columns if column in diff_df.columns]
+            st.dataframe(
+                diff_df.style
+                .map(style_differential, subset=['Avg Diff Attack', 'Avg Diff Defense'])
+                .map(style_fixture_cell, subset=fixture_columns)
+                .format({'Avg Diff Attack': '{:+.1f}', 'Avg Diff Defense': '{:+.1f}'}, na_rep='-'),
+                use_container_width=True,
+                hide_index=True
+            )
+            st.caption(
+                f"Cakupan mengambil {horizon_n} fixture mendatang per klub; jika ada DGW, setiap fixture dihitung sebagai satu laga. "
+                "Kolom GW menampilkan lawan, venue (H/A), serta Diff Attack dan Diff Defense per fixture. "
+                "Rata-rata dihitung dari fixture dalam cakupan tersebut. Nilai positif menunjukkan skor aspek klub lebih tinggi daripada lawannya."
+            )
+
+    # =========================================================================
+    # TAB 4: KOMPARASI HEAD-TO-HEAD 2 KLUB (DUEL FIXTURES)
     # =========================================================================
     with tab_h2h:
         st.markdown("#### ⚔️ Komparasi Head-to-Head Jadwal 2 Klub (Duel Fixtures)")
@@ -1450,7 +1635,7 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
             )
 
     # =========================================================================
-    # TAB 4: ANALISIS PENGARUH HOME VS AWAY (FDR, SKOR SERANGAN & PERTAHANAN)
+    # TAB 5: ANALISIS PENGARUH HOME VS AWAY (FDR, SKOR SERANGAN & PERTAHANAN)
     # =========================================================================
     with tab_home_away:
         st.markdown("""
@@ -1920,7 +2105,7 @@ def render_tab_fixtures(fixtures_data, teams_dict, fdr_summary, fpl_data=None, d
             st.markdown("##### 🔮 4. Matchday Impact Simulator: Dynamic Club Venue Factor & Model Poisson Bivariat")
             st.caption(
                 "Menerapkan penyesuaian **Dynamic Club-Specific Venue Factor** (disesuaikan dengan rasio kekuatan kandang/tandang historis masing-masing klub) "
-                "dan **Model Bivariat Dixon-Coles Poisson** untuk mensimulasikan ekspektasi skor gol ($\lambda$), probabilitas hasil (Home/Draw/Away), Clean Sheet, serta Over/Under 2.5."
+                "dan **Model Bivariat Dixon-Coles Poisson** untuk mensimulasikan ekspektasi skor gol ($\\lambda$), probabilitas hasil (Home/Draw/Away), Clean Sheet, serta Over/Under 2.5."
             )
 
             # Hitung Dynamic Club-Specific Venue Factor dictionary

@@ -59,7 +59,7 @@ def fetch_player_history_raw(player_id):
     except Exception:
         return []
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=3600)
 def fetch_player_history(player_id):
     """Mengambil histori match-by-match individual pemain dengan cache."""
     return fetch_player_history_raw(player_id)
