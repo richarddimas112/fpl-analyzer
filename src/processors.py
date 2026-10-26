@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from scipy.stats import poisson
 
 from src.constants import POSITION_MAP, STATUS_MAP, POSITION_XG_MULTIPLIER, POSITION_XA_MULTIPLIER
-from src.api import fetch_player_history_raw
+from src.api import fetch_player_history
 
 def bivariate_dixon_coles_cs_prob(lambda_team, lambda_opp, rho=-0.06):
     """
@@ -61,11 +61,10 @@ def load_historical_training_data():
 
 def compute_automatic_position_multipliers(players_data, fallback_xg=None, fallback_xa=None):
     """
-    Menghitung Weighted Multiplier Posisi secara otomatis berbasis agregasi riwayat 
-    efisiensi konversi performa riil:
-      - xG Multiplier = sum(Gol) / sum(xG)
-      - xA Multiplier = sum(Asis) / sum(xA)
-    Dikelompokkan berdasarkan posisi pemain (FWD, MID, DEF, GK).
+    Menghitung multiplier posisi sebagai fallback xG dan sebagai multiplier xA:
+      - xG fallback posisi = sum(Gol) / sum(xG)
+      - xA multiplier posisi = sum(Asis) / sum(xA)
+    Multiplier xG personal dihitung oleh compute_automatic_player_xg_multipliers.
     """
     if fallback_xg is None:
         fallback_xg = POSITION_XG_MULTIPLIER
@@ -134,6 +133,37 @@ def compute_automatic_position_multipliers(players_data, fallback_xg=None, fallb
         }
 
     return auto_xg, auto_xa, stats_dict
+
+
+def compute_automatic_player_xg_multipliers(players_data, fallback_xg=None, min_xg=0.5):
+    """Return each player's goals/xG conversion multiplier, falling back to position at low xG."""
+    if isinstance(players_data, pd.DataFrame):
+        df = players_data.copy()
+    else:
+        df = pd.DataFrame(players_data)
+    auto_xg_by_position, _, _ = compute_automatic_position_multipliers(df, fallback_xg=fallback_xg)
+
+    goals_col = 'Gol' if 'Gol' in df.columns else ('goals_scored' if 'goals_scored' in df.columns else None)
+    xg_col = 'xG' if 'xG' in df.columns else ('expected_goals' if 'expected_goals' in df.columns else None)
+    if 'Posisi' in df.columns:
+        positions = df['Posisi']
+    elif 'element_type' in df.columns:
+        positions = df['element_type'].map({1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'})
+    else:
+        positions = pd.Series(index=df.index, dtype=object)
+
+    fallback = positions.map(auto_xg_by_position).fillna(1.0).astype(float)
+    if not goals_col or not xg_col:
+        return fallback
+
+    goals = pd.to_numeric(df[goals_col], errors='coerce').fillna(0.0)
+    xg = pd.to_numeric(df[xg_col], errors='coerce').fillna(0.0)
+    personal_ratio = (goals / xg.replace(0.0, np.nan)).replace([np.inf, -np.inf], np.nan)
+    eligible = xg >= float(min_xg)
+    multiplier = fallback.copy()
+    multiplier.loc[eligible] = personal_ratio.loc[eligible].fillna(fallback.loc[eligible]).clip(0.50, 2.00)
+    multiplier.loc[positions == 'GK'] = 0.0
+    return multiplier.astype(float)
 
 def format_setpiece_order(val):
     """Memformat urutan set-piece menjadi label yang jelas."""
@@ -250,8 +280,146 @@ def calculate_team_fdrs(fixtures, teams_dict, teams_short_dict=None):
         
     return fdr_summary
 
-@st.cache_data(ttl=86400)
-def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
+@st.cache_data(ttl=3600)
+def collect_team_match_metrics(elements, fixtures_data, histories_by_player_id=None):
+    """Aggregate player xG and goalkeeper xGC by the club they represented in each finished fixture."""
+    fixture_by_id = {
+        int(fixture['id']): fixture
+        for fixture in (fixtures_data or [])
+        if fixture.get('id') is not None
+        and (fixture.get('finished') or fixture.get('finished_provisional'))
+        and fixture.get('team_h_score') is not None
+        and fixture.get('team_a_score') is not None
+    }
+    team_fixture_rows = {}
+    for fixture_id, fixture in fixture_by_id.items():
+        gw = fixture.get('event')
+        if gw is None:
+            continue
+        home_id, away_id = int(fixture['team_h']), int(fixture['team_a'])
+        home_score, away_score = int(fixture['team_h_score']), int(fixture['team_a_score'])
+        for team_id, opponent_score, goals_for in (
+            (home_id, away_score, home_score),
+            (away_id, home_score, away_score),
+        ):
+            team_fixture_rows[(team_id, fixture_id)] = {
+                'team_id': team_id,
+                'fixture_id': fixture_id,
+                'gw': int(gw),
+                'xg': 0.0,
+                'xgc': 0.0,
+                'goals_for': goals_for,
+                'goals_against': opponent_score,
+                'clean_sheet': int(opponent_score == 0),
+                'gk_xgc_rows': 0,
+            }
+
+    active_elements = [
+        element for element in (elements or [])
+        if int(element.get('minutes', 0) or 0) > 0 or int(element.get('total_points', 0) or 0) > 0
+    ]
+    position_by_player = {
+        int(element['id']): int(element.get('element_type', 0) or 0)
+        for element in active_elements
+        if element.get('id') is not None
+    }
+
+    def load_history(element):
+        player_id = int(element['id'])
+        if histories_by_player_id is not None:
+            history = histories_by_player_id.get(player_id, histories_by_player_id.get(str(player_id), []))
+            return player_id, history
+        return player_id, fetch_player_history(player_id)
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        histories = list(executor.map(load_history, active_elements))
+
+    for player_id, history in histories:
+        is_goalkeeper = position_by_player.get(player_id) == 1
+        for match in history:
+            try:
+                fixture_id = int(match['fixture'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            fixture = fixture_by_id.get(fixture_id)
+            if fixture is None:
+                continue
+            if match.get('was_home') not in (True, False):
+                continue
+            is_home = match['was_home']
+            team_id = int(fixture['team_h'] if is_home else fixture['team_a'])
+            team_row = team_fixture_rows.get((team_id, fixture_id))
+            if team_row is None:
+                continue
+            team_row['xg'] += float(match.get('expected_goals', 0.0) or 0.0)
+            if is_goalkeeper:
+                team_row['xgc'] += float(match.get('expected_goals_conceded', 0.0) or 0.0)
+                team_row['gk_xgc_rows'] += 1
+
+    rows = list(team_fixture_rows.values())
+    for row in rows:
+        # Use the official score as a transparent proxy only when no keeper xGC
+        # is available for that team-fixture.
+        if row['gk_xgc_rows'] == 0:
+            row['xgc'] = float(row['goals_against'])
+    return rows
+
+
+def summarize_team_match_metrics(team_match_rows, target_gw=None, prior_matches=5.0):
+    """Compute per-match team rates, optionally using only fixtures before a target GW."""
+    prior_rows = [
+        row for row in team_match_rows
+        if target_gw is None or int(row['gw']) < int(target_gw)
+    ]
+    grouped = {}
+    for row in prior_rows:
+        stats = grouped.setdefault(int(row['team_id']), {
+            'matches': 0, 'xg': 0.0, 'xgc': 0.0, 'goals_for': 0,
+            'goals_against': 0, 'clean_sheets': 0,
+        })
+        stats['matches'] += 1
+        for key in ('xg', 'xgc', 'goals_for', 'goals_against', 'clean_sheet'):
+            stats[{'clean_sheet': 'clean_sheets'}.get(key, key)] += float(row[key])
+
+    league_matches = sum(stats['matches'] for stats in grouped.values())
+    prior_rates = {}
+    for key in ('xg', 'xgc', 'goals_for', 'goals_against', 'clean_sheets'):
+        total = sum(stats[key] for stats in grouped.values())
+        prior_rates[key] = total / league_matches if league_matches else float('nan')
+
+    result = {}
+    team_ids = {int(row['team_id']) for row in team_match_rows}
+    for team_id in team_ids:
+        stats = grouped.get(team_id, {
+            'matches': 0, 'xg': 0.0, 'xgc': 0.0, 'goals_for': 0,
+            'goals_against': 0, 'clean_sheets': 0,
+        })
+        n = stats['matches']
+        adjusted = {}
+        for key in ('xg', 'xgc', 'goals_for', 'goals_against', 'clean_sheets'):
+            prior_rate = prior_rates[key]
+            if not np.isfinite(prior_rate):
+                adjusted[key] = float('nan')
+            else:
+                adjusted[key] = (stats[key] + prior_rate * prior_matches) / (n + prior_matches)
+        result[team_id] = {
+            **stats,
+            'xg_per_match': stats['xg'] / n if n else float('nan'),
+            'xgc_per_match': stats['xgc'] / n if n else float('nan'),
+            'goals_for_per_match': stats['goals_for'] / n if n else float('nan'),
+            'goals_against_per_match': stats['goals_against'] / n if n else float('nan'),
+            'clean_sheet_rate': stats['clean_sheets'] / n if n else float('nan'),
+        'xg_per_match_adjusted': adjusted['xg'],
+            'xgc_per_match_adjusted': adjusted['xgc'],
+            'goals_for_per_match_adjusted': adjusted['goals_for'],
+            'goals_against_per_match_adjusted': adjusted['goals_against'],
+            'clean_sheet_rate_adjusted': adjusted['clean_sheets'],
+        }
+    return result
+
+
+@st.cache_data(ttl=3600)
+def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary, fixtures_data):
     """
     Aggregate comprehensive Premier League team data from player statistics and FPL APIs:
     - Average FPL points of players (and active players)
@@ -261,8 +429,13 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
     - Fixture Difficulty Ratings: FDR1, FDR3, FDR5, Next Opponent (Home/Away), Schedule Ease
     - Normalized Composite Team Strength Index (0 - 100) and Strength Tiers
     """
+    if fixtures_data is None:
+        raise ValueError("fixtures_data wajib diberikan agar metrik per laga dan clean sheet tim akurat.")
+
     teams = _fpl_data.get('teams', []) if _fpl_data else []
     records = []
+    team_match_rows = collect_team_match_metrics(_fpl_data.get('elements', []) if _fpl_data else [], fixtures_data)
+    team_season_metrics = summarize_team_match_metrics(team_match_rows)
 
     # Kelompokkan pemain sekali; tanpa ini seluruh DataFrame dipindai ulang
     # untuk setiap tim.
@@ -297,7 +470,7 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
             total_xgi = float(tp['xGI'].sum())
             
             def_gk = tp[tp['Posisi'].isin(['DEF', 'GK'])]
-            clean_sheets = int(def_gk['Clean Sheet'].max()) if not def_gk.empty else 0
+            clean_sheets = 0
             
             # Hitung aktual kebobolan (Goals Conceded / GC) dari akumulasi kebobolan kiper
             gks = tp[tp['Posisi'].isin(['GK', 'GKP'])]
@@ -407,6 +580,20 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
         str_ovr_a = t.get('strength_overall_away', 3) or 3
         str_ovr = round((str_ovr_h + str_ovr_a) / 2.0, 1)
         
+        team_metric = team_season_metrics.get(int(t_id), {})
+        matches_played = int(team_metric.get('matches', 0))
+        matches_completed = matches_played
+        total_xg = float(team_metric.get('xg', 0.0))
+        total_goals = int(team_metric.get('goals_for', 0))
+        total_xgc = float(team_metric.get('xgc', 0.0))
+        total_gc = int(team_metric.get('goals_against', 0))
+        clean_sheets = int(team_metric.get('clean_sheets', 0))
+        xg_per_match = team_metric.get('xg_per_match', float('nan'))
+        goals_per_match = team_metric.get('goals_for_per_match', float('nan'))
+        xgc_per_match = team_metric.get('xgc_per_match', float('nan'))
+        goals_conceded_per_match = team_metric.get('goals_against_per_match', float('nan'))
+        clean_sheet_rate = team_metric.get('clean_sheet_rate', float('nan'))
+
         records.append({
             'team_id': t_id,
             'Klub': t_name,
@@ -419,12 +606,24 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
             'Total Gol': total_goals,
             'Total Asis': total_assists,
             'Total xG': round(total_xg, 2),
+            'xG per Match': round(xg_per_match, 3),
+            'Gol per Match': round(goals_per_match, 3),
+            'xG per Match (Smoothed)': round(team_metric.get('xg_per_match_adjusted', float('nan')), 3),
+            'Gol per Match (Smoothed)': round(team_metric.get('goals_for_per_match_adjusted', float('nan')), 3),
             'Total xA': round(total_xa, 2),
             'Total xGI': round(total_xgi, 2),
             'Clean Sheet': clean_sheets,
+            'Clean Sheet Rate (%)': round(clean_sheet_rate * 100.0, 1),
+            'Clean Sheet Rate (Smoothed %)': round(team_metric.get('clean_sheet_rate_adjusted', float('nan')) * 100.0, 1),
+            'Matches Played': matches_played,
+            'Matches Completed': matches_completed,
             'Kebobolan': total_gc,
             'Kebobolan (GC)': total_gc,
+            'Kebobolan per Match': round(goals_conceded_per_match, 3),
+            'Kebobolan per Match (Smoothed)': round(team_metric.get('goals_against_per_match_adjusted', float('nan')), 3),
             'Total xGC': round(total_xgc, 2),
+            'xGC per Match': round(xgc_per_match, 3),
+            'xGC per Match (Smoothed)': round(team_metric.get('xgc_per_match_adjusted', float('nan')), 3),
             'Total Saves': total_saves,
             'Form Rata-rata': round(avg_form, 2),
             'Nilai Skuad (£m)': round(total_squad_value, 1),
@@ -453,16 +652,23 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
     def min_max_scale(series, invert=False):
         mn, mx = series.min(), series.max()
         if mx == mn:
-            return pd.Series(50.0, index=series.index)
+            return pd.Series(50.0, index=series.index).where(series.notna(), 50.0)
         scaled = (series - mn) / (mx - mn) * 100.0
-        return (100.0 - scaled) if invert else scaled
+        scaled = (100.0 - scaled) if invert else scaled
+        # A club with no observed fixtures has no rate estimate; treat it as
+        # neutral rather than as the best/worst team due to a synthetic zero.
+        return scaled.fillna(50.0)
 
-    att_score = 0.6 * min_max_scale(df_teams['Total xG']) + 0.4 * min_max_scale(df_teams['Total Gol'])
-    # Skor Pertahanan Profesional: 40% Minimalisir xGC (Underlying), 35% Minimalisir Kebobolan Riil (GC), 25% Clean Sheet (Hasil Akhir FPL)
+    # Rate metrics avoid rewarding teams for having played more fixtures.
+    att_score = 0.6 * min_max_scale(df_teams['xG per Match (Smoothed)']) + 0.4 * min_max_scale(df_teams['Gol per Match (Smoothed)'])
+    xgc_metric = 'xGC per Match (Smoothed)'
+    gc_metric = 'Kebobolan per Match (Smoothed)'
+    cs_metric = 'Clean Sheet Rate (Smoothed %)'
+    # Skor pertahanan komparatif: 40% xGC/laga, 35% kebobolan/laga, 25% clean-sheet rate aktual.
     def_score = (
-        0.40 * min_max_scale(df_teams['Total xGC'], invert=True) +
-        0.35 * min_max_scale(df_teams['Kebobolan (GC)'], invert=True) +
-        0.25 * min_max_scale(df_teams['Clean Sheet'])
+        0.40 * min_max_scale(df_teams[xgc_metric], invert=True) +
+        0.35 * min_max_scale(df_teams[gc_metric], invert=True) +
+        0.25 * min_max_scale(df_teams[cs_metric])
     )
     pts_score = 0.6 * min_max_scale(df_teams['Rata-rata Poin Pemain']) + 0.4 * min_max_scale(df_teams['Total Poin Skuad'])
     fdr_score = min_max_scale(df_teams['FDR3'], invert=True)
@@ -489,46 +695,192 @@ def calculate_team_strength_analysis(_fpl_data, players_df, fdr_summary):
     df_teams['Kategori Tim'] = df_teams['Indeks Kekuatan'].apply(assign_tier)
     return df_teams
 
-@st.cache_data(ttl=86400)
-def compute_all_l5m_avg_mins(elements):
-    """
-    Fetch match history for all active players concurrently using a thread pool.
-    Returns a dict {player_id: avg_mins_l5m}
-    """
-    active_elements = [el for el in elements if int(el.get('minutes', 0)) > 0]
-    
-    def get_l5m_for_player(el):
-        p_id = el['id']
-        hist = fetch_player_history_raw(p_id)
-        # Filter pertandingan yang sudah valid berjalan/selesai
-        valid_hist = [
-            m for m in hist 
-            if (m.get('team_h_score') is not None and m.get('team_a_score') is not None) or int(m.get('minutes', 0)) > 0
-        ]
-        if valid_hist:
-            sorted_hist = sorted(valid_hist, key=lambda m: m.get('round', m.get('event', 0)))
-            last_5 = sorted_hist[-5:]
-            avg_m = sum(int(x.get('minutes', 0)) for x in last_5) / float(len(last_5))
-            return p_id, round(avg_m, 1)
-        else:
-            fallback = min(90.0, float(el.get('minutes', 0)))
-            return p_id, round(fallback, 1)
+@st.cache_data(ttl=3600)
+def compute_all_l5m_option_b_features(elements, target_gw_by_player, histories_by_player_id=None):
+    """Build leakage-safe rolling features and position-shrunk Threat/90."""
+    active_elements = [el for el in elements if int(el.get('minutes', 0) or 0) > 0 or int(el.get('total_points', 0) or 0) > 0]
 
-    l5m_map = {}
+    def load_history(el):
+        pid = int(el['id'])
+        if histories_by_player_id is not None:
+            return pid, histories_by_player_id.get(pid, histories_by_player_id.get(str(pid), []))
+        return pid, fetch_player_history(pid)
+
+    histories = {}
     with ThreadPoolExecutor(max_workers=20) as executor:
-        results = executor.map(get_l5m_for_player, active_elements)
-        for p_id, val in results:
-            l5m_map[p_id] = val
+        for pid, history in executor.map(load_history, active_elements):
+            histories[pid] = history or []
 
-    # Fill default for non-active players
+    player_by_id = {int(el['id']): el for el in active_elements}
+    target_gws = {int(gw) for gw in target_gw_by_player.values() if gw is not None}
+    position_priors = {}
+    for target_gw in target_gws:
+        totals = {}
+        for pid, history in histories.items():
+            pos = int(player_by_id[pid].get('element_type', 0) or 0)
+            bucket = totals.setdefault(pos, [0.0, 0.0])
+            for match in history:
+                if int(match.get('round', match.get('event', 0)) or 0) < target_gw:
+                    bucket[0] += float(match.get('threat', 0.0) or 0.0)
+                    bucket[1] += float(match.get('minutes', 0) or 0)
+        league_threat = sum(v[0] for v in totals.values())
+        league_minutes = sum(v[1] for v in totals.values())
+        league_rate = league_threat / league_minutes * 90.0 if league_minutes else 0.0
+        position_priors[target_gw] = {
+            pos: vals[0] / vals[1] * 90.0 if vals[1] else league_rate
+            for pos, vals in totals.items()
+        }
+
+    feature_map = {}
+    for el in active_elements:
+        pid = int(el['id'])
+        target_gw = target_gw_by_player.get(pid, target_gw_by_player.get(str(pid)))
+        history = histories.get(pid, [])
+        prior = [m for m in history if target_gw is None or int(m.get('round', m.get('event', 0)) or 0) < int(target_gw)]
+        prior.sort(key=lambda m: (int(m.get('round', m.get('event', 0)) or 0), m.get('kickoff_time', '')))
+        window = prior[-5:]
+        n_matches = len(window)
+        total_mins = sum(float(m.get('minutes', 0) or 0) for m in window)
+        total_threat = sum(float(m.get('threat', 0.0) or 0.0) for m in window)
+        pos = int(el.get('element_type', 0) or 0)
+        pos_prior = position_priors.get(int(target_gw), {}).get(pos, 0.0) if target_gw is not None else 0.0
+        threat90 = ((total_threat * 90.0) + pos_prior * 270.0) / (total_mins + 270.0)
+        feature_map[pid] = {
+            'avg_mins': round(total_mins / n_matches, 1) if n_matches else 0.0,
+            'form': sum(float(m.get('total_points', 0) or 0) for m in window) / n_matches if n_matches else 0.0,
+            'started_prev': int(float(prior[-1].get('minutes', 0) or 0) >= 60) if prior else 0,
+            'threat_per_90': float(max(0.0, threat90)),
+            'creativity_per_90': float(sum(float(m.get('creativity', 0.0) or 0.0) for m in window) / max(total_mins, 60.0) * 90.0),
+        }
+
+    # Preserve rows for inactive players so downstream output remains complete.
     for el in elements:
-        if el['id'] not in l5m_map:
-            l5m_map[el['id']] = 0.0
+        feature_map.setdefault(int(el['id']), {
+            'avg_mins': 0.0, 'form': 0.0, 'started_prev': 0,
+            'threat_per_90': 0.0, 'creativity_per_90': 0.0,
+        })
+    return feature_map
 
-    return l5m_map
 
-@st.cache_data(ttl=86400)
-def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
+@st.cache_data(ttl=3600)
+def compute_team_differentials_asof(elements, fixtures_data, target_gws=None, histories_by_player_id=None):
+    """Build leakage-safe, transfer-aware and shrunk team differentials per target GW."""
+    team_match_rows = collect_team_match_metrics(elements, fixtures_data, histories_by_player_id)
+    all_team_ids = sorted({
+        int(f[key]) for f in (fixtures_data or []) for key in ('team_h', 'team_a')
+        if f.get(key) is not None
+    })
+    fixtures_by_gw = {}
+    for fixture in fixtures_data or []:
+        if fixture.get('event') is not None:
+            fixtures_by_gw.setdefault(int(fixture['event']), []).append(fixture)
+    targets = sorted({
+        int(gw) for gw in (target_gws if target_gws is not None else fixtures_by_gw)
+        if gw is not None
+    })
+    result = {}
+
+    def scale(metric_name, metrics, invert=False):
+        values = np.asarray([
+            float(metrics.get(team_id, {}).get(metric_name, np.nan)) for team_id in all_team_ids
+        ], dtype=float)
+        valid = np.isfinite(values)
+        scaled = np.full(values.shape, 50.0)
+        if valid.any():
+            lo, hi = float(values[valid].min()), float(values[valid].max())
+            if hi > lo:
+                scaled[valid] = (values[valid] - lo) / (hi - lo) * 100.0
+                if invert:
+                    scaled[valid] = 100.0 - scaled[valid]
+        return dict(zip(all_team_ids, scaled))
+
+    for target_gw in targets:
+        team_metrics = summarize_team_match_metrics(team_match_rows, target_gw=target_gw)
+        att_xg = scale('xg_per_match_adjusted', team_metrics)
+        att_goals = scale('goals_for_per_match_adjusted', team_metrics)
+        def_xgc = scale('xgc_per_match_adjusted', team_metrics, invert=True)
+        def_gc = scale('goals_against_per_match_adjusted', team_metrics, invert=True)
+        def_cs = scale('clean_sheet_rate_adjusted', team_metrics)
+        attack_scores = {tid: round(0.6 * att_xg[tid] + 0.4 * att_goals[tid], 1) for tid in all_team_ids}
+        defense_scores = {tid: round(0.40 * def_xgc[tid] + 0.35 * def_gc[tid] + 0.25 * def_cs[tid], 1) for tid in all_team_ids}
+
+        # Rebuild the Home vs Away simulator venue factors using only prior finished fixtures.
+        prior_fixtures = [
+            f for f in (fixtures_data or [])
+            if f.get('event') is not None and int(f['event']) < target_gw
+            and (f.get('finished') or f.get('finished_provisional'))
+        ]
+        venue = {}
+        for team_id in all_team_ids:
+            home_rows = [f for f in prior_fixtures if int(f.get('team_h', -1)) == team_id]
+            away_rows = [f for f in prior_fixtures if int(f.get('team_a', -1)) == team_id]
+            def avg(rows, field):
+                return sum(float(f.get(field, 0) or 0) for f in rows) / max(len(rows), 1)
+            home_gf, away_gf = avg(home_rows, 'team_h_score'), avg(away_rows, 'team_a_score')
+            home_ga, away_ga = avg(home_rows, 'team_a_score'), avg(away_rows, 'team_h_score')
+            home_pts = sum(
+                3 if int(f.get('team_h_score', 0) or 0) > int(f.get('team_a_score', 0) or 0)
+                else 1 if int(f.get('team_h_score', 0) or 0) == int(f.get('team_a_score', 0) or 0) else 0
+                for f in home_rows
+            ) / max(len(home_rows), 1)
+            away_pts = sum(
+                3 if int(f.get('team_a_score', 0) or 0) > int(f.get('team_h_score', 0) or 0)
+                else 1 if int(f.get('team_a_score', 0) or 0) == int(f.get('team_h_score', 0) or 0) else 0
+                for f in away_rows
+            ) / max(len(away_rows), 1)
+            perf_diff = (home_pts - away_pts) * 0.15 + (home_gf - away_gf) * 0.10 + (away_ga - home_ga) * 0.08
+            venue[team_id] = {
+                'att_boost': float(np.clip(4.0 + perf_diff * 4.0, 1.5, 9.0)),
+                'def_boost': float(np.clip(4.0 + (away_ga - home_ga) * 3.0, 1.0, 8.0)),
+            }
+
+        def likely_score(lambda_home, lambda_away):
+            lh, la, rho = max(0.1, float(lambda_home)), max(0.1, float(lambda_away)), -0.06
+            matrix = np.zeros((6, 6), dtype=float)
+            for home_goals in range(6):
+                for away_goals in range(6):
+                    adjustment = 1.0
+                    if (home_goals, away_goals) == (0, 0): adjustment = 1.0 - lh * la * rho
+                    elif (home_goals, away_goals) == (0, 1): adjustment = 1.0 + lh * rho
+                    elif (home_goals, away_goals) == (1, 0): adjustment = 1.0 + la * rho
+                    elif (home_goals, away_goals) == (1, 1): adjustment = 1.0 - rho
+                    matrix[home_goals, away_goals] = max(
+                        0.0, poisson.pmf(home_goals, lh) * poisson.pmf(away_goals, la) * adjustment
+                    )
+            matrix /= max(float(matrix.sum()), 1e-12)
+            return tuple(int(value) for value in np.unravel_index(np.argmax(matrix), matrix.shape))
+
+        for fixture in fixtures_by_gw.get(target_gw, []):
+            home_id, away_id = int(fixture['team_h']), int(fixture['team_a'])
+            home_venue = venue.get(home_id, {'att_boost': 4.5, 'def_boost': 4.0})
+            away_venue = venue.get(away_id, {'att_boost': 4.5, 'def_boost': 4.0})
+            home_edge = attack_scores.get(home_id, 50.0) + home_venue['att_boost'] - (
+                defense_scores.get(away_id, 50.0) - away_venue['def_boost'] * 0.6
+            )
+            away_edge = (attack_scores.get(away_id, 50.0) - away_venue['att_boost'] * 0.6) - (
+                defense_scores.get(home_id, 50.0) + home_venue['def_boost']
+            )
+            score = likely_score(1.48 * np.exp(home_edge / 40.0), 1.22 * np.exp(away_edge / 40.0))
+            result[(target_gw, home_id)] = {
+                'diff_attack': round(attack_scores.get(home_id, 50.0) - defense_scores.get(away_id, 50.0), 1),
+                'diff_defense': round(defense_scores.get(home_id, 50.0) - attack_scores.get(away_id, 50.0), 1),
+                'opponent_id': away_id,
+                'is_home': True,
+                'likely_team_goals': score[0],
+                'likely_opponent_goals': score[1],
+            }
+            result[(target_gw, away_id)] = {
+                'diff_attack': round(attack_scores.get(away_id, 50.0) - defense_scores.get(home_id, 50.0), 1),
+                'diff_defense': round(defense_scores.get(away_id, 50.0) - attack_scores.get(home_id, 50.0), 1),
+                'opponent_id': home_id,
+                'is_home': False,
+                'likely_team_goals': score[1],
+                'likely_opponent_goals': score[0],
+            }
+    return result
+
+@st.cache_data(ttl=3600)
+def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None, histories_by_player_id=None):
     """Transform raw FPL JSON into a clean, feature-rich Pandas DataFrame with dual xPoin predictions."""
     elements = fpl_data.get('elements', [])
     teams = fpl_data.get('teams', [])
@@ -555,8 +907,13 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         team_xg_att_per_90 = (tot_team_xg / tot_team_mins * 90.0) if tot_team_mins > 0 else 1.35
         team_xg_att_map[t_id] = team_xg_att_per_90
 
-    # Fetch L5M Average Minutes for all players concurrently
-    l5m_map = compute_all_l5m_avg_mins(elements)
+    # Gunakan fitur rolling pra-pertandingan yang sama dengan Option B training.
+    target_gw_by_player = {}
+    for el in elements:
+        upcoming = fdr_summary.get(el.get('team'), {}).get('upcoming_all', [])
+        if upcoming and upcoming[0].get('gw') is not None:
+            target_gw_by_player[el['id']] = int(upcoming[0]['gw'])
+    model_features_map = compute_all_l5m_option_b_features(elements, target_gw_by_player, histories_by_player_id)
 
     processed = []
     for el in elements:
@@ -634,7 +991,8 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         recoveries_90 = min(15.0, (recoveries / eff_mins) * 90.0) if mins > 0 else 0.0
 
         # L5M Average Minutes
-        avg_mins_l5m = l5m_map.get(el['id'], 0.0)
+        rolling_features = model_features_map.get(el['id'], {})
+        avg_mins_l5m = rolling_features.get('avg_mins', 0.0)
 
         # Peluang Main GW (%)
         chance_gw = el.get('chance_of_playing_next_round')
@@ -688,6 +1046,10 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             'Opponent_xGC_per_90': opp_xg_def,
             'Opponent_xG_per_90_attack': opp_xg_att,
             'Form': form,
+            'option_b_form_prior': rolling_features.get('form', 0.0),
+            'option_b_threat_per_90': rolling_features.get('threat_per_90', 0.0),
+            'option_b_started_prev': rolling_features.get('started_prev', 0),
+            'option_b_creativity_per_90': rolling_features.get('creativity_per_90', 0.0),
             '% Ownership': float(el.get('selected_by_percent', 0.0) or 0.0),
             'Net Transfers GW': int(el.get('transfers_in_event', 0)) - int(el.get('transfers_out_event', 0)),
             'Transfers In GW': int(el.get('transfers_in_event', 0)),
@@ -823,46 +1185,48 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
             continue
         sub_df = df[pos_mask]
 
-        # Model xG: Opponent_xGC_per_90, was_home, form, thread_per_90, FDR, Diff Attack Team
+        # Option B memakai fitur pra-laga rolling yang sama dengan data latih.
         pos_m_xg = opt_b_xg.get(pos_key) if isinstance(opt_b_xg, dict) else opt_b_xg
-        opp_xgc_col = sub_df['Opponent_xGC_per_90'] if 'Opponent_xGC_per_90' in sub_df.columns else (sub_df['xGC per 90'] if 'xGC per 90' in sub_df.columns else pd.Series(1.35, index=sub_df.index))
         home_col = sub_df['Next_Is_Home'] if 'Next_Is_Home' in sub_df.columns else pd.Series(1, index=sub_df.index)
-        form_col = sub_df['Form'] if 'Form' in sub_df.columns else pd.Series(3.0, index=sub_df.index)
-        threat_col = sub_df['raw_threat90'] if 'raw_threat90' in sub_df.columns else (sub_df['threat_per_90'] if 'threat_per_90' in sub_df.columns else pd.Series(15.0, index=sub_df.index))
+        form_col = sub_df['option_b_form_prior'] if 'option_b_form_prior' in sub_df.columns else pd.Series(0.0, index=sub_df.index)
+        threat_col = sub_df['option_b_threat_per_90'] if 'option_b_threat_per_90' in sub_df.columns else pd.Series(0.0, index=sub_df.index)
+        started_col = sub_df['option_b_started_prev'] if 'option_b_started_prev' in sub_df.columns else pd.Series(0, index=sub_df.index)
+        likely_team_goals = sub_df.get('option_b_likely_team_goals', pd.Series(0.0, index=sub_df.index))
+        likely_opponent_goals = sub_df.get('option_b_likely_opponent_goals', pd.Series(0.0, index=sub_df.index))
         fdr_col = sub_df['FDR1'] if 'FDR1' in sub_df.columns else pd.Series(3.0, index=sub_df.index)
         diff_att_col = sub_df['Diff Attack Team'] if 'Diff Attack Team' in sub_df.columns else pd.Series(0.0, index=sub_df.index)
 
         if pos_m_xg is not None:
             X_xg = pd.DataFrame({
-                'Opponent_xGC_per_90': opp_xgc_col,
-                'was_home': home_col,
-                'form': form_col,
-                'thread_per_90': threat_col,
-                'FDR': fdr_col,
-                'Diff Attack Team': diff_att_col
+                'form_points': form_col,
+                'minutes_l5': sub_df['Avg Mins (L5M)'],
+                'started_prev': started_col,
+                'threat_per90_l5': threat_col,
+                'attack_diff': diff_att_col,
+                'is_home': home_col,
+                'likely_team_goals': likely_team_goals,
+                'likely_opponent_goals': likely_opponent_goals,
             }, index=sub_df.index).fillna(0.0)
             raw_xg_match[pos_mask.values] = pos_m_xg.predict(X_xg)
         else:
-            raw_xg_match[pos_mask.values] = (threat_col / 50.0 * (opp_xgc_col / 1.35) * (1.1 if home_col.mean() == 1 else 0.9)).values
+            raw_xg_match[pos_mask.values] = (threat_col / 50.0 * (1.1 if home_col.mean() == 1 else 0.9)).values
 
-        # Model xA: Opponent_xGC_per_90, was_home, is_setpiece_taker, form, creativity_per_90, FDR, Diff Attack Team
+        # Tidak memakai is_setpiece_taker: riwayat status per GW tidak tersedia.
         pos_m_xa = opt_b_xa.get(pos_key) if isinstance(opt_b_xa, dict) else opt_b_xa
-        sp_col = sub_df['is_setpiece_taker'] if 'is_setpiece_taker' in sub_df.columns else pd.Series(0, index=sub_df.index)
-        creativity_col = sub_df['raw_creativity90'] if 'raw_creativity90' in sub_df.columns else (sub_df['creativity_per_90'] if 'creativity_per_90' in sub_df.columns else pd.Series(15.0, index=sub_df.index))
+        creativity_col = sub_df['option_b_creativity_per_90'] if 'option_b_creativity_per_90' in sub_df.columns else pd.Series(0.0, index=sub_df.index)
 
         if pos_m_xa is not None:
             X_xa = pd.DataFrame({
-                'Opponent_xGC_per_90': opp_xgc_col,
                 'was_home': home_col,
-                'is_setpiece_taker': sp_col,
                 'form': form_col,
                 'creativity_per_90': creativity_col,
                 'FDR': fdr_col,
-                'Diff Attack Team': diff_att_col
+                'Diff Attack Team': diff_att_col,
+                'position': pos_key,
             }, index=sub_df.index).fillna(0.0)
             raw_xa_match[pos_mask.values] = pos_m_xa.predict(X_xa)
         else:
-            raw_xa_match[pos_mask.values] = (creativity_col / 60.0 * (opp_xgc_col / 1.35) * (1.1 if home_col.mean() == 1 else 0.9)).values
+            raw_xa_match[pos_mask.values] = (creativity_col / 60.0 * (1.1 if home_col.mean() == 1 else 0.9)).values
 
     # KHUSUS UNTUK POSISI 'GK' (Kiper): Paksa (hardcode) nilai raw_xg_match = 0.0 dan raw_xa_match = 0.0
     gk_mask = (df['Posisi'] == 'GK')
@@ -870,8 +1234,11 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
     raw_xa_match[gk_mask] = 0.0
 
     mins_ratio = df['Avg Mins (L5M)'] / 90.0
+    expected_mins_ratio = mins_ratio * (df['Peluang Main GW (%)'].fillna(100.0) / 100.0)
+    df['xG Pred (90)'] = np.maximum(0.0, raw_xg_match).round(3)
     df['xG Pred (Match)'] = (np.maximum(0.0, raw_xg_match) * mins_ratio).round(2)
-    df['xA Pred (Match)'] = (np.maximum(0.0, raw_xa_match) * mins_ratio).round(2)
+    df['xA Pred (90)'] = np.maximum(0.0, raw_xa_match).round(3)
+    df['xA Pred (Match)'] = (np.maximum(0.0, raw_xa_match) * expected_mins_ratio).round(2)
 
     # Component Calculations:
     # a. xMins_Pts
@@ -892,7 +1259,7 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
     poin_gol = df['Posisi'].map(poin_gol_map).fillna(4.0)
     
     auto_xg_mult, auto_xa_mult, _ = compute_automatic_position_multipliers(df)
-    pos_xg_mult = df['Posisi'].map(auto_xg_mult).fillna(1.0)
+    pos_xg_mult = compute_automatic_player_xg_multipliers(df, fallback_xg=auto_xg_mult)
     pos_xa_mult = df['Posisi'].map(auto_xa_mult).fillna(1.0)
 
     df['xG Mult'] = pos_xg_mult.round(2)
@@ -959,7 +1326,7 @@ def process_players(fpl_data, fdr_summary, _models_dict, _opt_b_models=None):
         'Nama Pemain', 'Klub', 'Lawan GW Berikutnya', 'Posisi', 'Harga (£m)', 'xPoin', 'xPoin (Option B)',
         'Diff Attack Team', 'Diff Defense Team', 'Peluang CS (%)',
         'xG Mult', 'xA Mult',
-        'xG Pred (Match)', 'xA Pred (Match)', 'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
+        'xG Pred (90)', 'xG Pred (Match)', 'xA Pred (90)', 'xA Pred (Match)', 'xMins Pts', 'xG Pts', 'xA Pts', 'xSaves Pts', 'xDC Pts', 'xCS Pts', 'xBP',
         'Avg Mins (L5M)', 'Total Poin', 'FDR1', 'FDR3', 'FDR5', 'FDR10', 'Form', '% Ownership', 'Net Transfers GW',
         'Transfers In GW', 'Transfers Out GW',
         'xG', 'xA', 'xGI', 'xGC', 'expected_goals_conceded', 'xG per 90', 'xA per 90', 'xGI per 90',
@@ -987,8 +1354,7 @@ def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_
     kemudian merekalibrasi model Option B (xG Pred, xA Pred, xDC Pts, xCS Pts, xBP, dan xPoin)
     menggunakan Weighted Multiplier Posisi yang dihitung OTOMATIS dari data histori performa aktual.
     
-    Fitur Model Prediksi xG: Opponent_xGC_per_90, was_home, form, thread_per_90, FDR, Diff Attack Team
-    Fitur Model Prediksi xA: Opponent_xGC_per_90, was_home, is_setpiece_taker, form, creativity_per_90, FDR, Diff Attack Team
+    Fitur Model Option B: venue, form prior L5, Threat/90 atau Creativity/90 prior L5, FDR, dan differential pra-GW.
     """
     if players_df.empty:
         return players_df
@@ -1016,8 +1382,11 @@ def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_
     diff_infos = [get_diff_info(club, team) for club, team in zip(club_values, team_values)]
     df['Diff Attack Team'] = [float(info.get('diff_attack', 0.0)) for info in diff_infos]
     df['Diff Defense Team'] = [float(info.get('diff_defense', 0.0)) for info in diff_infos]
+    df['option_b_likely_team_goals'] = [float(info.get('likely_team_goals', 0.0)) for info in diff_infos]
+    df['option_b_likely_opponent_goals'] = [float(info.get('likely_opponent_goals', 0.0)) for info in diff_infos]
 
     mins_ratio = df['Avg Mins (L5M)'] / 90.0
+    expected_mins_ratio = mins_ratio * (df['Peluang Main GW (%)'].fillna(100.0) / 100.0)
 
     # 1. Prediksi xG Pred (Match) dan xA Pred (Match) menggunakan Model Regresi Option B atau penyesuaian faktor
     if _opt_b_models is not None and any(m is not None for m in _opt_b_models):
@@ -1025,12 +1394,10 @@ def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_
         raw_xg_match = np.zeros(len(df))
         raw_xa_match = np.zeros(len(df))
 
-        opp_xgc = df['Opponent_xGC_per_90'] if 'Opponent_xGC_per_90' in df.columns else (df['xGC per 90'] if 'xGC per 90' in df.columns else pd.Series(1.35, index=df.index))
         was_home = df['Next_Is_Home'] if 'Next_Is_Home' in df.columns else pd.Series(1, index=df.index)
-        is_sp = df['is_setpiece_taker'] if 'is_setpiece_taker' in df.columns else pd.Series(0, index=df.index)
-        form_series = df['Form'] if 'Form' in df.columns else pd.Series(3.0, index=df.index)
-        threat_series = df['raw_threat90'] if 'raw_threat90' in df.columns else (df['threat_per_90'] if 'threat_per_90' in df.columns else (df['Threat'] if 'Threat' in df.columns else pd.Series(15.0, index=df.index)))
-        creativity_series = df['raw_creativity90'] if 'raw_creativity90' in df.columns else (df['creativity_per_90'] if 'creativity_per_90' in df.columns else (df['Creativity'] if 'Creativity' in df.columns else pd.Series(15.0, index=df.index)))
+        form_series = df['option_b_form_prior'] if 'option_b_form_prior' in df.columns else pd.Series(0.0, index=df.index)
+        threat_series = df['option_b_threat_per_90'] if 'option_b_threat_per_90' in df.columns else pd.Series(0.0, index=df.index)
+        creativity_series = df['option_b_creativity_per_90'] if 'option_b_creativity_per_90' in df.columns else pd.Series(0.0, index=df.index)
         fdr_series = df['FDR1'] if 'FDR1' in df.columns else pd.Series(3.0, index=df.index)
         diff_att_series = df['Diff Attack Team'] if 'Diff Attack Team' in df.columns else pd.Series(0.0, index=df.index)
 
@@ -1044,38 +1411,41 @@ def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_
             pos_m_xg = opt_b_xg.get(pos_key) if isinstance(opt_b_xg, dict) else opt_b_xg
             if pos_m_xg is not None:
                 X_xg = pd.DataFrame({
-                    'Opponent_xGC_per_90': opp_xgc.loc[sub_idx],
-                    'was_home': was_home.loc[sub_idx],
-                    'form': form_series.loc[sub_idx],
-                    'thread_per_90': threat_series.loc[sub_idx],
-                    'FDR': fdr_series.loc[sub_idx],
-                    'Diff Attack Team': diff_att_series.loc[sub_idx]
+                    'form_points': form_series.loc[sub_idx],
+                    'minutes_l5': sub_df['Avg Mins (L5M)'],
+                    'started_prev': sub_df.get('option_b_started_prev', pd.Series(0, index=sub_idx)),
+                    'threat_per90_l5': threat_series.loc[sub_idx],
+                    'attack_diff': diff_att_series.loc[sub_idx],
+                    'is_home': was_home.loc[sub_idx],
+                    'likely_team_goals': sub_df.get('option_b_likely_team_goals', pd.Series(0.0, index=sub_idx)),
+                    'likely_opponent_goals': sub_df.get('option_b_likely_opponent_goals', pd.Series(0.0, index=sub_idx)),
                 }, index=sub_idx).fillna(0.0)
                 raw_xg_match[pos_mask.values] = pos_m_xg.predict(X_xg)
             else:
-                raw_xg_match[pos_mask.values] = (threat_series.loc[sub_idx] / 50.0 * (opp_xgc.loc[sub_idx] / 1.35)).values
+                raw_xg_match[pos_mask.values] = (threat_series.loc[sub_idx] / 50.0).values
 
             pos_m_xa = opt_b_xa.get(pos_key) if isinstance(opt_b_xa, dict) else opt_b_xa
             if pos_m_xa is not None:
                 X_xa = pd.DataFrame({
-                    'Opponent_xGC_per_90': opp_xgc.loc[sub_idx],
                     'was_home': was_home.loc[sub_idx],
-                    'is_setpiece_taker': is_sp.loc[sub_idx],
                     'form': form_series.loc[sub_idx],
                     'creativity_per_90': creativity_series.loc[sub_idx],
                     'FDR': fdr_series.loc[sub_idx],
-                    'Diff Attack Team': diff_att_series.loc[sub_idx]
+                    'Diff Attack Team': diff_att_series.loc[sub_idx],
+                    'position': pos_key,
                 }, index=sub_idx).fillna(0.0)
                 raw_xa_match[pos_mask.values] = pos_m_xa.predict(X_xa)
             else:
-                raw_xa_match[pos_mask.values] = (creativity_series.loc[sub_idx] / 60.0 * (opp_xgc.loc[sub_idx] / 1.35)).values
+                raw_xa_match[pos_mask.values] = (creativity_series.loc[sub_idx] / 60.0).values
 
         gk_mask = (df['Posisi'] == 'GK')
         raw_xg_match[gk_mask] = 0.0
         raw_xa_match[gk_mask] = 0.0
 
+        df['xG Pred (90)'] = np.maximum(0.0, raw_xg_match).round(3)
         df['xG Pred (Match)'] = (np.maximum(0.0, raw_xg_match) * mins_ratio).round(2)
-        df['xA Pred (Match)'] = (np.maximum(0.0, raw_xa_match) * mins_ratio).round(2)
+        df['xA Pred (90)'] = np.maximum(0.0, raw_xa_match).round(3)
+        df['xA Pred (Match)'] = (np.maximum(0.0, raw_xa_match) * expected_mins_ratio).round(2)
     else:
         att_diff_factor = np.clip(1.0 + (df['Diff Attack Team'] / 100.0) * 0.5, 0.6, 1.6)
         gk_mask = (df['Posisi'] == 'GK')
@@ -1089,6 +1459,16 @@ def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_
             0.0,
             (df['xA Pred (Match)'] * att_diff_factor).round(2)
         )
+        df['xA Pred (90)'] = np.divide(
+            df['xA Pred (Match)'], expected_mins_ratio,
+            out=np.zeros(len(df), dtype=float), where=expected_mins_ratio.to_numpy() > 0,
+        ).round(3)
+
+    if _opt_b_models is None or not any(m is not None for m in _opt_b_models):
+        df['xG Pred (90)'] = np.divide(
+            df['xG Pred (Match)'], mins_ratio,
+            out=np.zeros(len(df), dtype=float), where=mins_ratio.to_numpy() > 0,
+        ).round(3)
 
     # 2. xG Pts dan xA Pts with Normalized Points Contribution Formula:
     # Menggunakan Weighted Multiplier Posisi yang dihitung OTOMATIS secara dinamis dari histori xG vs G dan xA vs A
@@ -1099,12 +1479,17 @@ def apply_team_differentials_and_recalc_option_b(players_df: pd.DataFrame, team_
     poin_gol_map = {'GK': 10.0, 'DEF': 6.0, 'MID': 5.0, 'FWD': 4.0}
     poin_gol = df['Posisi'].map(poin_gol_map).fillna(4.0)
 
-    if custom_multipliers and len(custom_multipliers) == 2:
+    custom_xg_multiplier = bool(custom_multipliers and len(custom_multipliers) == 2)
+    if custom_xg_multiplier:
         active_xg_mult, active_xa_mult = custom_multipliers
     else:
         active_xg_mult, active_xa_mult, _ = compute_automatic_position_multipliers(df)
 
-    pos_xg_mult = df['Posisi'].map(active_xg_mult).fillna(1.0)
+    pos_xg_mult = (
+        df['Posisi'].map(active_xg_mult).fillna(1.0)
+        if custom_xg_multiplier
+        else compute_automatic_player_xg_multipliers(df, fallback_xg=active_xg_mult)
+    )
     pos_xa_mult = df['Posisi'].map(active_xa_mult).fillna(1.0)
 
     df['xG Mult'] = pos_xg_mult.round(2)
