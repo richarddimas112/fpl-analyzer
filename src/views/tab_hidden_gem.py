@@ -10,6 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from src.models_hidden_gem import (
+    get_hidden_gem_predictions,
     build_hidden_gem_and_haul_dataset,
     train_xgboost_haul_model,
     render_seaborn_underperformance_plot
@@ -27,9 +28,8 @@ def render_tab_hidden_gem(fpl_data, fdr_summary, current_gw, filtered_player_ids
         "Analisis Volatilitas/Ceiling Poin, dan Model Klasifikasi XGBoost Berbobot."
     )
 
-    with st.spinner("Mengolah histori 5 match terakhir seluruh pemain, menghitung Underperformance Index, dan melatih XGBoost Classifier..."):
-        df_train, df_upcoming = build_hidden_gem_and_haul_dataset(fpl_data, fdr_summary, current_gw)
-        df_pred, feat_df, metrics = train_xgboost_haul_model(df_train, df_upcoming)
+    with st.spinner("Memuat data & model prediksi Hidden Gem (XGBoost)..."):
+        df_pred, feat_df, metrics = get_hidden_gem_predictions(fpl_data, fdr_summary, current_gw)
 
     if df_pred.empty:
         st.warning("Data pemain belum mencukupi untuk menjalankan analisis Hidden Gem.")
@@ -165,6 +165,11 @@ def render_tab_hidden_gem(fpl_data, fdr_summary, current_gw, filtered_player_ids
     st.markdown("---")
 
     # --- SECTION 3: TABEL KLASIFIKASI PROBABILITAS HAUL LENGKAP ---
+    render_gem_table_section(df_display_pool, df_pred, current_gw)
+
+
+@st.fragment
+def render_gem_table_section(df_display_pool, df_pred, current_gw):
     st.markdown("### 3. 🎯 Tabel Klasifikasi Probabilitas Haul GW Mendatang (Diurutkan Tertinggi)")
     st.caption("ℹ️ *Tabel ini otomatis tersinkronisasi dengan kontrol filter global di Sidebar (Klub, Posisi, Rentang Kepemilikan/Ownership, Harga, Menit Bermain, & Pencarian Nama Pemain).*")
     
