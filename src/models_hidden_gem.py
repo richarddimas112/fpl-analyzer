@@ -21,7 +21,7 @@ from src.constants import POSITION_MAP
 from src.api import fetch_player_history_raw
 
 @st.cache_data(ttl=86400)
-def build_hidden_gem_and_haul_dataset(_fpl_data, fdr_summary, current_gw):
+def build_hidden_gem_and_haul_dataset(_fpl_data, _fdr_summary, current_gw):
     """
     Ekstrak data match-by-match individual seluruh pemain aktif di musim berjalan:
     1. FEATURE ENGINEERING & DETEKSI UNDERPERFORMANCE:
@@ -138,7 +138,7 @@ def build_hidden_gem_and_haul_dataset(_fpl_data, fdr_summary, current_gw):
             })
 
         # Feature Upcoming Gameweek
-        f_info = fdr_summary.get(p_team, {})
+        f_info = _fdr_summary.get(p_team, {}) if _fdr_summary else {}
         next_fdr = float(f_info.get('FDR1', 3.0))
         next_opp_fmt = f_info.get('Next_Opponent_Fmt', '-')
 
@@ -305,6 +305,18 @@ def train_xgboost_haul_model(df_train, df_upcoming):
     }
 
     return df_res, feat_df, metrics
+
+
+@st.cache_data(ttl=3600)
+def get_hidden_gem_predictions(_fpl_data, _fdr_summary, current_gw):
+    """
+    Eksekusi ter-cache untuk pipeline Hidden Gem & Prediksi Haul XGBoost.
+    Menjamin dataset dan pelatihan model hanya dijalankan sekali per Gameweek,
+    mencegah overhead kalkulasi ulang saat pengguna berinteraksi dengan filter di tab UI.
+    """
+    df_train, df_upcoming = build_hidden_gem_and_haul_dataset(_fpl_data, _fdr_summary, current_gw)
+    df_pred, feat_df, metrics = train_xgboost_haul_model(df_train, df_upcoming)
+    return df_pred, feat_df, metrics
 
 
 def render_seaborn_underperformance_plot(df_upcoming):
